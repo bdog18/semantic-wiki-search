@@ -1,0 +1,275 @@
+import gc
+import json
+import os
+import time
+from multiprocessing import Pool, cpu_count
+
+import faiss
+import torch
+from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
+
+from swsearch.common.textsplit import split_paragraphs
+from swsearch.config import settings
+from swsearch.linkgraph.store import get_links_for_title_sqlite, load_linkgraph_sqlite
+from swsearch.logutil import get_logger
+from swsearch.metadata.store import get_text_and_meta_from_db, load_faiss_meta_sqlite
+
+logger = get_logger(__name__)
+
+# Globals populated once per worker process by init_worker (Pool workers are
+# forked on Linux, so these are set up once and reused across every file the
+# worker processes -- not re-initialized per task).
+_model = None
+_index = None
+_faiss_meta_conn = None
+_article_titles = None
+_link_conn = None
+
+
+def init_worker(faiss_index_path: str, faiss_meta_db_path: str, article_titles_path: str, link_graph_path: str, model_name: str) -> None:
+    global _model, _index, _faiss_meta_conn, _article_titles, _link_conn
+
+    worker_id = os.getpid()
+    start_time = time.time()
+    logger.info("Worker %d: initializing...", worker_id)
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
+    cpu_index = faiss.read_index(faiss_index_path)
+
+    if settings.model.use_gpu_faiss and torch.cuda.is_available():
+        logger.info("Worker %d: transferring FAISS index to GPU with FP16 (use_gpu_faiss=True)...", worker_id)
+        res = faiss.StandardGpuResources()
+        res.setTempMemory(2 * 1024 * 1024 * 1024)
+        co = faiss.GpuClonerOptions()
+        co.useFloat16 = True
+        co.usePrecomputed = False
+        _index = faiss.index_cpu_to_gpu(res, 0, cpu_index, co)
+    else:
+        _index = cpu_index
+
+    _faiss_meta_conn = load_faiss_meta_sqlite(faiss_meta_db_path)
+
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    _model = SentenceTransformer(model_name, device=device)
+    if device == 'cuda':
+        _model.half()
+
+    _link_conn = load_linkgraph_sqlite(link_graph_path)
+    with open(article_titles_path, "r", encoding="utf-8") as f:
+        _article_titles = json.load(f)
+
+    logger.info("Worker %d: ready in %.1fs", worker_id, time.time() - start_time)
+
+
+def process_batch(anchors: list[str], positives: list[str], metadata: list[tuple[str, set[str]]], out_f, neg_pool_size: int) -> int:
+    """Encode a batch of anchor/positive pairs and mine one hard negative each
+    from the FAISS index, excluding paragraphs from the same or a linked
+    article. Returns the number of triplets written."""
+    if not anchors or not _model or not _index or not _faiss_meta_conn:
+        return 0
+
+    min_len = settings.mining.min_paragraph_length
+    triplets_count = 0
+    try:
+        anchor_embeddings = _model.encode(
+            anchors,
+            convert_to_numpy=True,
+            normalize_embeddings=True,
+            batch_size=settings.mining.batch_size,
+            show_progress_bar=False,
+        )
+
+        _, I = _index.search(anchor_embeddings.astype('float32'), neg_pool_size)
+
+        for idx, (anchor, positive, (src_title, linked_titles)) in enumerate(zip(anchors, positives, metadata)):
+            negative = None
+            for j in I[idx]:
+                neg_para, neg_title = get_text_and_meta_from_db(_faiss_meta_conn, int(j))
+                if neg_para and neg_title and neg_title != src_title and neg_title not in linked_titles:
+                    if len(neg_para) > min_len and neg_para != anchor and neg_para != positive:
+                        negative = neg_para
+                        break
+
+            if negative:
+                triplet = {
+                    "anchor": anchor,
+                    "positive": positive,
+                    "negative": negative,
+                    "source": src_title,
+                    "url": (_article_titles or {}).get(src_title, ""),
+                }
+                out_f.write(json.dumps(triplet, ensure_ascii=False) + "\n")
+                triplets_count += 1
+
+    except Exception:
+        logger.exception("Batch encode/search failed; dropping %d anchors", len(anchors))
+        return 0
+
+    return triplets_count
+
+
+def process_file_worker(args: tuple[str, str, int]) -> tuple[str, int]:
+    """Mine triplets from one JSONL file of articles. Renames the file to
+    `<name>.completed` on success so a later run can resume without redoing
+    work."""
+    file_path, triplet_output_dir, file_index = args
+    m = settings.mining
+
+    output_path = os.path.join(triplet_output_dir, f"wiki_{file_index}_triplets.jsonl")
+    triplets_written = 0
+    skipped_lines = 0
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f, open(output_path, "w", encoding="utf-8") as out_f:
+            batch_anchors: list[str] = []
+            batch_positives: list[str] = []
+            batch_metadata: list[tuple[str, set[str]]] = []
+
+            for line in f:
+                try:
+                    article = json.loads(line)
+                except json.JSONDecodeError:
+                    skipped_lines += 1
+                    logger.exception("Skipping malformed JSONL line in %s", file_path)
+                    continue
+
+                title = article.get("title")
+                if not title:
+                    continue
+
+                raw_text = article.get("content", "")
+                if len(raw_text) < m.min_text_length:
+                    continue
+
+                paras = [p for p in split_paragraphs(raw_text) if len(p) > m.min_paragraph_length]
+                if len(paras) < m.min_paragraphs_for_triplets:
+                    continue
+
+                linked_titles = get_links_for_title_sqlite(_link_conn, title)
+                if not linked_titles:
+                    continue
+
+                triplet_count = 0
+                for i in range(1, min(len(paras), m.max_triplets_per_article + 1)):
+                    anchor = paras[i]
+                    if len(anchor) <= m.min_paragraph_length:
+                        continue
+
+                    positive = None
+                    if i + 1 < len(paras):
+                        positive = paras[i + 1]
+                    elif len(paras) > 2:
+                        positive = paras[0] if i != 0 else paras[2]
+
+                    if positive and len(positive) > m.min_paragraph_length:
+                        batch_anchors.append(anchor)
+                        batch_positives.append(positive)
+                        batch_metadata.append((title, linked_titles))
+                        triplet_count += 1
+                        if triplet_count >= m.max_triplets_per_article:
+                            break
+
+                if len(batch_anchors) >= m.batch_size:
+                    triplets_written += process_batch(batch_anchors, batch_positives, batch_metadata, out_f, m.negative_pool_size)
+                    batch_anchors.clear()
+                    batch_positives.clear()
+                    batch_metadata.clear()
+                    if triplets_written % 1000 == 0:
+                        gc.collect()
+
+            if batch_anchors:
+                triplets_written += process_batch(batch_anchors, batch_positives, batch_metadata, out_f, m.negative_pool_size)
+
+        if skipped_lines:
+            logger.warning("%s: skipped %d malformed line(s)", file_path, skipped_lines)
+
+        _rename_completed_file(file_path)
+        return file_path, triplets_written
+
+    except Exception:
+        logger.exception("Failed to process %s", file_path)
+        return file_path, 0
+
+
+def mine_triplets(
+    jsonl_dir: str,
+    index_path: str,
+    meta_db_path: str,
+    link_db_path: str,
+    article_titles_path: str,
+    out_dir: str,
+    num_workers: int | None = None,
+    max_files_per_worker: int | None = None,
+) -> int:
+    """Memory-efficient parallel triplet mining over JSONL articles, using an
+    existing FAISS paragraph index + metadata store to find hard negatives."""
+    os.makedirs(out_dir, exist_ok=True)
+
+    empty_count = 0
+    for filename in os.listdir(out_dir):
+        if filename.endswith("_triplets.jsonl"):
+            filepath = os.path.join(out_dir, filename)
+            if os.path.getsize(filepath) == 0:
+                os.remove(filepath)
+                empty_count += 1
+    if empty_count:
+        logger.info("Removed %d empty triplet file(s) from a previous interrupted run", empty_count)
+
+    all_files = sorted(
+        os.path.join(root, file)
+        for root, _, filenames in os.walk(jsonl_dir)
+        for file in filenames
+        if file.endswith(".jsonl") or file.endswith(".jsonl.completed")
+    )
+
+    completed = {f[: -len(".completed")] if f.endswith(".completed") else f for f in all_files if f.endswith(".completed")}
+    files_to_process = [f for f in all_files if not f.endswith(".completed") and f not in completed]
+
+    if not files_to_process:
+        logger.info("No .jsonl files to process (all files already completed).")
+        return 0
+
+    logger.info("Found %d total files, %d already completed, %d to process", len(all_files), len(completed), len(files_to_process))
+
+    existing = [f for f in os.listdir(out_dir) if f.startswith("wiki_") and f.endswith("_triplets.jsonl")]
+    max_existing_index = 0
+    for filename in existing:
+        try:
+            index = int(filename.split("_")[1])
+            max_existing_index = max(max_existing_index, index)
+        except (ValueError, IndexError):
+            continue
+    start_index = max_existing_index + 1
+
+    if num_workers is None:
+        num_workers = min(cpu_count() // 2, 2) or 1
+    if max_files_per_worker is None:
+        max_files_per_worker = max(200, len(files_to_process) // num_workers)
+
+    logger.info("Mining triplets with %d workers over %d files...", num_workers, len(files_to_process))
+    start_time = time.time()
+
+    with Pool(
+        processes=num_workers,
+        initializer=init_worker,
+        initargs=(index_path, meta_db_path, article_titles_path, link_db_path, settings.model.embedding_model_name),
+        maxtasksperchild=max_files_per_worker,
+    ) as pool:
+        worker_args = [(file_path, out_dir, start_index + idx) for idx, file_path in enumerate(files_to_process)]
+        results = list(tqdm(
+            pool.imap_unordered(process_file_worker, worker_args),
+            total=len(files_to_process),
+            desc="Mining triplets",
+            unit="file",
+        ))
+
+    total_triplets = sum(n for _, n in results)
+    elapsed = time.time() - start_time
+    logger.info("Mined %d triplets from %d files in %.1f min", total_triplets, len(results), elapsed / 60)
+    return total_triplets
+
+
+def _rename_completed_file(src_path: str) -> None:
+    completed_path = src_path + ".completed"
+    os.replace(src_path, completed_path)

@@ -1,0 +1,31 @@
+[project]
+name = "swsearch"
+version = "0.1.0"
+description = "Semantic search engine over a Wikipedia dump: extract, link graph, FAISS index, search."
+requires-python = ">=3.10"
+readme = "README.md"
+
+dependencies = [
+    "faiss-cpu",
+    "sentence-transformers",
+    "torch",
+    "pyspark",
+    "numpy",
+    "lxml",
+    "tqdm",
+    "typer",
+    "pydantic",
+    "pydantic-settings",
+    "python-dotenv",
+    "gradio",
+]
+
+[project.scripts]
+swsearch = "swsearch.cli:app"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
