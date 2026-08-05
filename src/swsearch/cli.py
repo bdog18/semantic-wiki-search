@@ -152,6 +152,34 @@ def mine_triplets(
     typer.echo(f"Mined {total} triplets into {out_dir}")
 
 
+@app.command("train-transfer")
+def train_transfer(
+    triplets_dir: Path = typer.Option(settings.paths.triplets_dir, help="Directory of mined triplet JSONL files (from `swsearch mine-triplets`)."),
+    output_dir: Path = typer.Option(settings.paths.transfer_model_dir, help="Where to save the fine-tuned model."),
+    base_model_name: str = typer.Option(settings.model.embedding_model_name, help="Pretrained SentenceTransformer to fine-tune."),
+    batch_size: int = typer.Option(64, help="Training batch size."),
+    max_steps: int = typer.Option(20000, help="Total training steps (triplets stream, so there's no fixed epoch count)."),
+    learning_rate: float = typer.Option(2e-5, help="Learning rate."),
+    margin: float = typer.Option(5.0, help="TripletLoss margin."),
+) -> None:
+    """Fine-tune a pretrained SentenceTransformer on mined triplets
+    (transfer learning). Reuses the triplets mined once against the baseline
+    index -- no separate mining run is needed for this. The saved model can
+    then be passed to `swsearch embed --model-name <output_dir>`."""
+    from swsearch.train import train_transfer_model
+
+    train_transfer_model(
+        triplets_dir=str(triplets_dir),
+        output_dir=str(output_dir),
+        base_model_name=base_model_name,
+        batch_size=batch_size,
+        max_steps=max_steps,
+        learning_rate=learning_rate,
+        margin=margin,
+    )
+    typer.echo(f"Fine-tuned model saved to {output_dir}")
+
+
 @app.command()
 def search(
     query: str = typer.Argument(..., help="Search query."),
@@ -171,13 +199,15 @@ def search(
 def evaluate(
     test_queries: Path = typer.Option(settings.paths.test_queries_path, help="JSON file of {query, relevant_articles} entries."),
     k_values: str = typer.Option("1,3,5,10", help="Comma-separated K values for Top-K/Precision/Recall."),
+    index_path: Path = typer.Option(settings.paths.faiss_index_path, help="FAISS index to evaluate (override to compare a different model's index)."),
+    meta_db: Path = typer.Option(settings.paths.faiss_meta_db_path, help="FAISS metadata SQLite store matching index_path."),
 ) -> None:
     """Run Top-K Accuracy, Precision@K, Recall@K, and MRR against a real SearchEngine."""
     from swsearch.eval.metrics import evaluate_all_metrics, load_test_set
     from swsearch.search.engine import SearchEngine
 
     ks = tuple(int(k.strip()) for k in k_values.split(","))
-    engine = SearchEngine()
+    engine = SearchEngine(index_path=str(index_path), meta_db_path=str(meta_db))
     retrieval_function = lambda q: [r["title"] for r in engine.search(q, k=max(ks))]  # noqa: E731
 
     test_set = load_test_set(str(test_queries))

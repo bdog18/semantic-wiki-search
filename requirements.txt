@@ -19,6 +19,7 @@ torch
 pydantic-settings
 python-dotenv
 
+accelerate==1.14.0
 aiofiles==24.1.0
 annotated-types==0.7.0
 anyio==4.9.0
@@ -28,6 +29,7 @@ charset-normalizer==3.4.1
 click==8.1.8
 colorama==0.4.6
 comm==0.2.2
+datasets==5.0.1
 debugpy==1.8.14
 decorator==5.2.1
 exceptiongroup==1.2.2

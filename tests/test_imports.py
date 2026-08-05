@@ -21,6 +21,7 @@ MODULES = [
     "swsearch.tools.inspect_index",
     "swsearch.fetch",
     "swsearch.pipeline",
+    "swsearch.train",
 ]
 
 

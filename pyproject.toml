@@ -19,6 +19,8 @@ dependencies = [
     "python-dotenv",
     "gradio",
     "requests",
+    "datasets",
+    "accelerate",
 ]
 
 [project.scripts]

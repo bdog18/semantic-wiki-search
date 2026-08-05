@@ -9,8 +9,10 @@ This project extracts, cleans, and embeds Wikipedia content; builds a link graph
 from a MySQL dump for use as positive/negative signal; mines hard-negative
 triplets by combining the link graph with FAISS nearest-neighbor search; and
 serves semantic search over paragraph-level embeddings with cosine reranking.
-Training a custom encoder was explored but is deprioritized in favor of the
-working off-the-shelf embedding pipeline (see **Research** below).
+The off-the-shelf embedding pipeline is the working baseline; a fine-tuned
+("transfer learning") and a from-scratch ("custom transformer") model can be
+trained on the same mined triplets and compared against it (see **Comparing
+Models** below).
 
 ---
 
@@ -40,15 +42,18 @@ working off-the-shelf embedding pipeline (see **Research** below).
 
 ---
 
-## Research (Deprioritized)
+## Research: Custom Transformer Encoder
 
 - `research/custom_encoder.py` (archived from `utils/custom_embedder.py`): a
-  custom transformer encoder trained with triplet loss, meant to eventually
-  replace the off-the-shelf SentenceTransformer model. Training was never
-  completed (no saved weights or vectorizer exist), and it is **not** wired
-  into the `swsearch` CLI. Kept outside `src/swsearch/` so TensorFlow/Keras
-  stay an opt-in research dependency (`requirements-research.txt`) rather than
-  a hard dependency of the installable package.
+  small transformer encoder trained from scratch with triplet loss, one of
+  the three models in the **Comparing Models** workflow above. Run directly
+  (`python research/custom_encoder.py --help`) -- not wired into the
+  `swsearch` CLI, so TensorFlow/Keras stay an opt-in research dependency
+  (`requirements-research.txt`) rather than a hard dependency of the
+  installable package. Training was never completed under the old
+  hardcoded-`__main__` version (no saved weights exist yet); it's now
+  argument-driven and reads whatever `swsearch mine-triplets` actually
+  produced instead of a stale hardcoded triplet count from an earlier run.
 
 ---
 
@@ -143,6 +148,7 @@ swsearch build-linkgraph  [--page-sql] [--pagelinks-sql] [--linktarget-sql] [--j
 swsearch embed            [--input-dir] [--output-dir] [--meta-db] [--model-name] [--batch-size]
 swsearch build-index      [--embeddings-dir] [--index-path] [--meta-db] [--index-type flat|ivfpq]
 swsearch mine-triplets    [--jsonl-dir] [--index-path] [--meta-db] [--link-db] [--out-dir] [--num-workers]
+swsearch train-transfer   [--triplets-dir] [--output-dir] [--base-model-name] [--batch-size] [--max-steps] [--learning-rate] [--margin]
 swsearch search QUERY     [--k] [--index-path] [--meta-db]
 swsearch evaluate         [--test-queries] [--k-values "1,3,5,10"]
 swsearch tools inspect-index INDEX_PATH
@@ -192,6 +198,63 @@ prints for its own work.
 
 ---
 
+## Comparing Models: Baseline vs. Transfer Learning vs. Custom Transformer
+
+The pipeline supports training and comparing three embedding models against
+the same corpus, link graph, and evaluation set:
+
+| Model | How it's produced | Where it lives |
+|---|---|---|
+| **Baseline** | Off-the-shelf `SentenceTransformer` (`all-MiniLM-L6-v2`), no training | `data/processed/faiss_index/` (the default paths) |
+| **Transfer learning** | `swsearch train-transfer` fine-tunes a pretrained SentenceTransformer on mined triplets | `data/processed/models/transfer_learning/` (suggested; `data/transfer_model/` is the CLI's own default output dir) |
+| **Custom transformer** | `research/custom_encoder.py` trains a small transformer from scratch on the same mined triplets | `data/custom_model/` |
+
+**What's shared across all three** (compute once, reuse for every model):
+raw dumps, the link graph, cleaned article JSON/JSONL, and -- importantly --
+**mined triplets**. Triplet mining's hard negatives come from a FAISS search
+against whichever index exists at mining time, which is the baseline's (the
+only one that exists before any custom model is trained); that single
+`swsearch mine-triplets` run's output is the training data for *both*
+`train-transfer` and `research/custom_encoder.py`. There's no need to mine
+separately per target model.
+
+**What must be rerun per model**: embedding (with that model's weights) and
+index building (from those embeddings). Point each at its own directory so
+the three never collide -- `swsearch embed`/`swsearch build-index` already
+accept `--output-dir`/`--meta-db`/`--index-path`/`--model-name` overrides for
+exactly this:
+
+```bash
+# 1. Mine triplets once, against the baseline index (already built)
+swsearch mine-triplets
+
+# 2. Fine-tune (transfer learning)
+swsearch train-transfer --output-dir data/processed/models/transfer_learning/model
+
+# 3. Train from scratch (custom transformer) -- separate venv/extras, see Research below
+python research/custom_encoder.py --output-dir data/custom_model
+
+# 4. Embed + index each model into its own directory
+swsearch embed --model-name data/processed/models/transfer_learning/model \
+  --output-dir data/processed/models/transfer_learning/embeddings \
+  --meta-db data/processed/models/transfer_learning/paragraphs.index.meta.db
+swsearch build-index --index-type ivfpq \
+  --embeddings-dir data/processed/models/transfer_learning/embeddings \
+  --meta-db data/processed/models/transfer_learning/paragraphs.index.meta.db \
+  --index-path data/processed/models/transfer_learning/paragraphs.index
+
+# 5. Evaluate each against the same test_queries.json for an apples-to-apples comparison
+swsearch evaluate --index-path data/processed/models/transfer_learning/paragraphs.index \
+  --meta-db data/processed/models/transfer_learning/paragraphs.index.meta.db
+```
+
+Embeddings/metadata/index are **not** shared between models -- each model
+produces its own vector space (and possibly its own dimensionality), and the
+metadata store's manifest-based alignment guarantee (see **Key Features**)
+only holds within one embed run, not across separately-run ones.
+
+---
+
 ## Example Use Case
 
 **Query**: "Who was involved in World War 2?"
@@ -213,6 +276,7 @@ semantic-wiki-search/
 │   ├── cli.py                     # typer app: swsearch <command>
 │   ├── pipeline.py                # `swsearch pipeline`: chains every stage, with progress/timing
 │   ├── fetch.py                   # idempotent raw-data fetch (dump/SQL downloads, wikiextractor)
+│   ├── train.py                   # `swsearch train-transfer`: fine-tune on mined triplets
 │   ├── logutil.py                 # logging setup
 │   ├── common/                    # shared Spark session + paragraph-split helpers
 │   ├── extract/wikidump.py        # XML dump -> cleaned JSON/JSONL + title->url lookup
@@ -224,7 +288,7 @@ semantic-wiki-search/
 │   ├── search/engine.py           # SearchEngine: embed -> FAISS -> cosine rerank -> dedupe
 │   ├── eval/metrics.py            # Top-K/Precision/Recall/MRR
 │   └── tools/inspect_index.py     # FAISS index diagnostics
-├── research/custom_encoder.py     # archived, deprioritized custom encoder training
+├── research/custom_encoder.py     # from-scratch custom encoder training (CLI args, own venv)
 ├── tests/                         # minimal smoke suite (imports + alignment invariant)
 ├── notebooks/
 │   ├── search_demo.ipynb          # working search demo, imports swsearch directly
@@ -243,7 +307,8 @@ semantic-wiki-search/
 - PySpark (dump parsing, link graph, paragraph splitting)
 - SQLite (link graph and FAISS metadata lookup)
 - pydantic-settings + typer (configuration and CLI)
-- TensorFlow / Keras (archived custom encoder research only)
+- TensorFlow / Keras (`research/custom_encoder.py` only, opt-in)
+- HuggingFace `datasets` + `accelerate` (streaming triplet training via `swsearch train-transfer`)
 
 ---
 

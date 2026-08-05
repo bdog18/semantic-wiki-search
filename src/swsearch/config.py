@@ -134,6 +134,11 @@ class PathSettings(BaseModel):
     def custom_model_dir(self) -> Path:
         return self.data_root / "custom_model"
 
+    # --- transfer learning (fine-tuned SentenceTransformer) ---
+    @property
+    def transfer_model_dir(self) -> Path:
+        return self.data_root / "transfer_model"
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(

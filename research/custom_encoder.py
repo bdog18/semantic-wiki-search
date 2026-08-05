@@ -1,14 +1,15 @@
-"""Archived research spike: a custom transformer encoder trained with triplet
-loss, meant to eventually replace the off-the-shelf SentenceTransformer model.
+"""Research spike: a custom transformer encoder trained from scratch with
+triplet loss, for the baseline / transfer-learning / custom-transformer
+3-model comparison -- see README.md. Not wired into the swsearch CLI; run
+directly (`python research/custom_encoder.py --help`) so TensorFlow/Keras
+stay an opt-in research dependency (requirements-research.txt) rather than a
+hard dependency of the installable package.
 
-Deprioritized relative to the working baseline (whole-article SentenceTransformer
-embeddings + flat FAISS index + cosine rerank) -- see README.md. Training was
-never completed (no best_encoder.weights.h5 / saved_vectorizer/ exist), and it
-is not wired into the swsearch CLI. Kept here, outside src/swsearch/, so
-TensorFlow/Keras stay an opt-in research dependency (requirements-research.txt)
-rather than a hard dependency of the installable package.
+Reuses the same triplets file mined once against the baseline index (`swsearch
+mine-triplets`) -- no separate mining run is needed for this model either.
 """
 
+import argparse
 import json
 import os
 
@@ -154,39 +155,53 @@ def load_triplet_dataset_streamed(json_dir, vectorizer, batch_size):
     )
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--triplets-dir", default=str(settings.paths.triplets_dir), help="Mined triplet JSONL directory (from `swsearch mine-triplets`).")
+    parser.add_argument("--output-dir", default=str(settings.paths.custom_model_dir), help="Where to save the vectorizer and encoder weights.")
+    parser.add_argument("--vocab-size", type=int, default=30000)
+    parser.add_argument("--max-len", type=int, default=32)
+    parser.add_argument("--embed-dim", type=int, default=128)
+    parser.add_argument("--num-heads", type=int, default=8)
+    parser.add_argument("--ff-dim", type=int, default=256)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
+    parser.add_argument("--patience", type=int, default=2, help="EarlyStopping patience, in epochs, on training loss.")
+    return parser.parse_args()
+
+
 if __name__ == '__main__':
-    input_dir = str(settings.paths.triplets_dir)
-    vectorizer_dir = str(settings.paths.custom_model_dir / "saved_vectorizer")
-    weights_dir = str(settings.paths.custom_model_dir)
-    vocab_size = 30000
-    max_len = 32
-    embed_dim = 128
-    num_heads = 8
-    ff_dim = 256
-    batch_size = 512
-    num_epochs = 30
-    learning_rate = 1e-4
-    total_lines = 15123359
+    args = _parse_args()
+    vectorizer_dir = os.path.join(args.output_dir, "saved_vectorizer")
+    weights_path = os.path.join(args.output_dir, "best_encoder.weights.h5")
+    os.makedirs(args.output_dir, exist_ok=True)
 
     if os.path.exists(vectorizer_dir):
         print("Loading saved vectorizer")
         vectorizer = tf.keras.models.load_model(vectorizer_dir)
     else:
-        create_vectorizer(input_dir, vectorizer_dir, vocab_size, max_len)
+        create_vectorizer(args.triplets_dir, vectorizer_dir, args.vocab_size, args.max_len)
         vectorizer = tf.keras.models.load_model(vectorizer_dir)
 
-    train_dataset = load_triplet_dataset_streamed(input_dir, vectorizer, batch_size)
+    # Not .repeat()'d: each epoch is one full pass over the (unknown-length,
+    # streamed) triplets file. tf.data/Keras handle an epoch ending on
+    # generator exhaustion natively, so there's no need to know the triplet
+    # count up front the way a fixed steps_per_epoch would -- that count is
+    # corpus-dependent (varies with however many triplets this run's corpus
+    # produced) and was previously a stale hardcoded value from an earlier,
+    # much smaller run.
+    train_dataset = load_triplet_dataset_streamed(args.triplets_dir, vectorizer, args.batch_size)
 
-    encoder = CustomEncoder(vocab_size, max_len, embed_dim, num_heads, ff_dim)
-    weights_path = f"{weights_dir}/best_encoder.weights.h5"
+    encoder = CustomEncoder(args.vocab_size, args.max_len, args.embed_dim, args.num_heads, args.ff_dim)
     if os.path.exists(weights_path):
         print("Loading best weights")
         encoder.load_weights(weights_path)
     trainer = TripletTrainer(encoder)
-    trainer.compile(optimizer=tf.keras.optimizers.Adam(learning_rate))
+    trainer.compile(optimizer=tf.keras.optimizers.Adam(args.learning_rate))
 
     callbacks = [
-        EarlyStopping(monitor="loss", patience=2),
+        EarlyStopping(monitor="loss", patience=args.patience),
         ModelCheckpoint(
             filepath=weights_path,
             monitor="loss",
@@ -195,10 +210,9 @@ if __name__ == '__main__':
         ),
     ]
     trainer.fit(
-        train_dataset.repeat(),
-        steps_per_epoch=total_lines // batch_size,
-        epochs=num_epochs,
+        train_dataset,
+        epochs=args.epochs,
         callbacks=callbacks,
     )
 
-    print("Training complete and weights saved.")
+    print(f"Training complete and weights saved to {weights_path}.")
