@@ -3,9 +3,18 @@
 # in research/custom_encoder.py) live in requirements-research.txt instead.
 #
 # torch is a direct dependency (used in mining/triplets.py) as well as a
-# transitive one (via sentence-transformers); pin a specific build for your
-# platform/CUDA version as needed, e.g.:
-#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# transitive one (via sentence-transformers). `pip install torch` from the
+# default index installs the CPU-only build even on a machine with an NVIDIA
+# GPU -- swsearch.config auto-detects torch.cuda.is_available() and only
+# gets "cuda" if a CUDA-enabled build is actually installed. To use a GPU,
+# reinstall torch from the CUDA wheel index matching your driver (check
+# `nvidia-smi` for the supported CUDA version, then find the newest matching
+# tag at https://download.pytorch.org/whl/ -- cu126 matched an RTX 3070 Ti /
+# driver supporting CUDA 13.3 as of this writing):
+#   pip install --index-url https://download.pytorch.org/whl/cu126 torch
+# Do NOT add --no-deps here -- torch's CUDA build depends on separate
+# nvidia-*-cu12 packages that provide the actual .so libraries; skipping
+# them breaks `import torch` entirely, not just GPU detection.
 torch
 pydantic-settings
 python-dotenv

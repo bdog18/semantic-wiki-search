@@ -95,6 +95,24 @@ of the base install; add them with:
 pip install -r requirements-research.txt
 ```
 
+**GPU**: `pip install -e .` pulls in the default (CPU-only) `torch` build even
+on a machine with an NVIDIA GPU. `swsearch.config` auto-detects
+`torch.cuda.is_available()` and only resolves `device` to `cuda` if a
+CUDA-enabled `torch` build is actually installed -- otherwise `embed`/`search`/
+`mine-triplets` silently run on CPU. To use a GPU, reinstall `torch` from the
+CUDA wheel index matching your driver (check `nvidia-smi` for the supported
+CUDA version, then find the newest matching tag at
+https://download.pytorch.org/whl/ -- `cu126` matched an RTX 3070 Ti / driver
+supporting CUDA 13.3 as of this writing):
+
+```bash
+pip install --index-url https://download.pytorch.org/whl/cu126 torch
+```
+
+Don't add `--no-deps` here -- torch's CUDA build depends on separate
+`nvidia-*-cu12` packages that provide the actual `.so` libraries; skipping
+them breaks `import torch` entirely, not just GPU detection.
+
 ---
 
 ## Configuration

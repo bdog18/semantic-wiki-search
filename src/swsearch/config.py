@@ -1,11 +1,24 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # src/swsearch/config.py -> repo root is two levels up from this file's package dir.
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _default_device() -> str:
+    """cuda if a GPU is visible to torch, else cpu. Checked once (Settings is
+    a cached singleton via get_settings()), not hardcoded -- so `swsearch
+    embed`/`swsearch pipeline` use a GPU automatically wherever one's
+    available instead of defaulting to CPU. Still overridable via
+    SWSEARCH_MODEL__DEVICE for anyone who wants to force one or the other."""
+    try:
+        import torch
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except ImportError:
+        return "cpu"
 
 
 class SparkSettings(BaseModel):
@@ -17,7 +30,7 @@ class SparkSettings(BaseModel):
 
 class ModelSettings(BaseModel):
     embedding_model_name: str = "all-MiniLM-L6-v2"
-    device: str = "cpu"
+    device: str = Field(default_factory=_default_device)
     use_gpu_faiss: bool = False
 
 
