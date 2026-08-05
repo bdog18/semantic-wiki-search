@@ -62,7 +62,9 @@ def save_embeddings_with_spark(data_dir, model, embedding_dir, meta_path):
 
     os.makedirs(embedding_dir, exist_ok=True)
     print("Loading JSON into Spark DataFrame...")
-    df = spark.read.option("multiLine", True).json(f"{data_dir}/**/*.json")
+    df = spark.read.option("multiLine", True) \
+                    .option("recursiveFileLookup", "true") \
+                    .json(data_dir)
 
     print("Splitting paragraphs...")
     df = df.withColumn("paragraphs", split(col("content"), r"\n\s*\n"))
@@ -89,6 +91,7 @@ def save_embeddings_with_spark(data_dir, model, embedding_dir, meta_path):
         batch_number += 1
 
     print("Saving metadata...")
+    os.makedirs(os.path.dirname(meta_path), exist_ok=True)
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump({"all_texts": all_texts, "text_to_meta": text_to_meta}, f)
 
@@ -102,96 +105,6 @@ def load_faiss_index(index_path, meta_path):
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
     return index, meta["all_texts"], meta["text_to_meta"]
-
-
-# def mine_triplets_streaming(para_db_path, article_titles, model, index, all_texts, text_to_meta, output_path):
-#     print("Streaming triplet mining using FAISS index and shelved paragraph DB...")
-#     triplets_written = 0
-
-#     files = []
-#     for root, _, filenames in os.walk(WIKI_DATA_DIR_JSONL):
-#         for file in filenames:
-#             if file.endswith(".jsonl"):
-#                 files.append(os.path.join(root, file))
-#     random.shuffle(files)
-
-#     link_conn = load_linkgraph_sqlite(LINK_GRAPH_PATH)
-#     with shelve.open(para_db_path, flag="r") as para_db, open(output_path, "w", encoding="utf-8") as out_f:
-#         for file_path in tqdm(files, desc="Mining files"):
-#             with open(file_path, "r", encoding="utf-8") as f:
-#                 for line in f:
-#                     try:
-#                         article = json.loads(line)
-#                         title = article.get("title")
-#                         raw_text = article.get("content", "")
-#                         paras = [p.strip() for p in raw_text.split("\n\n") if p.strip()]
-#                         linked_titles = get_links_for_title_sqlite(link_conn, title)
-
-#                         if not linked_titles:
-#                             continue
-                        
-#                         triplets_for_article = 0
-#                         for i, anchor in enumerate(paras[1:], 1): # skip title which is first
-#                             if triplets_for_article >= MAX_TRIPLETS_PER_ARTICLE:
-#                                 break
-
-#                             if not anchor.strip() or len(anchor) <= 20:
-#                                 continue
-
-#                             # Try linked article for positive paragraph
-#                             positive = None
-#                             for linked_title in linked_titles:
-#                                 linked_paras = para_db.get(linked_title, [])
-#                                 positive = next(
-#                                     (p for p in linked_paras if p.strip() and p.strip() != linked_title and linked_title.lower() not in p.strip().lower() and len(p.strip()) > 20),
-#                                     None
-#                                 )
-
-#                                 if positive:
-#                                     break
-#                             if not positive and len(paras) > i + 1:
-#                                 positive = paras[i + 1]
-
-#                             if not positive:
-#                                 continue
-
-#                             anchor_embed = model.encode(anchor, convert_to_numpy=True, normalize_embeddings=True).reshape(1, -1)
-#                             D, I = index.search(anchor_embed, NEGATIVE_POOL_SIZE + 20)  # extra buffer
-#                             negative = None
-#                             for j in I[0]:
-#                                 neg_title = text_to_meta[j]
-#                                 neg_para = all_texts[j]
-#                                 if (
-#                                     neg_title != title and
-#                                     neg_title not in linked_titles and
-#                                     neg_para != anchor and
-#                                     neg_para != positive and
-#                                     len(neg_para) >= 2
-#                                 ):
-#                                     negative = neg_para
-#                                     break
-
-#                             if not negative:
-#                                 continue
-
-#                             triplet = {
-#                                 "anchor": anchor,
-#                                 "positive": positive,
-#                                 "negative": negative,
-#                                 "source": title,
-#                                 "url": article_titles.get(title, "")
-#                             }
-#                             out_f.write(json.dumps(triplet, ensure_ascii=False) + "\n")
-#                             triplets_written += 1
-#                             triplets_for_article += 1
-
-#                             if triplets_written >= MAX_TRIPLETS:
-#                                 print("Reached triplet limit.")
-#                                 return
-#                     except json.JSONDecodeError:
-#                         continue
-
-#     print(f"Finished mining {triplets_written} triplets.")
 
 
 def mine_triplets_streaming(para_db_path, article_titles, model, index, all_texts, text_to_meta, output_path):
@@ -367,7 +280,7 @@ def create_ivfpq_faiss_index(embedding_dir_path, faiss_idx_path, nlist=100, npro
     print("IVF-PQ FAISS index saved.")
 
 # CONFIGURATION
-WIKI_DATA_DIR_JSON = "../data/processed/wikidata_json_para"
+WIKI_DATA_DIR_JSON = "../data/processed/wikidata_json"
 WIKI_DATA_DIR_JSONL = "../data/processed/wikidata_jsonl"
 LINK_GRAPH_PATH = "../data/processed/wiki_link_graph.db"
 PARAGRAPH_DB_PATH = "../data/processed/paragraphs_shelve.db"
@@ -392,19 +305,19 @@ if __name__ == "__main__":
     # build_paragraph_shelve(WIKI_DATA_DIR_JSONL, PARAGRAPH_DB_PATH)
 
     # if not os.path.exists(FAISS_INDEX_PATH):
-    # save_embeddings_with_spark(WIKI_DATA_DIR_JSON, model, EMBEDDING_DIR, FAISS_META_PATH) # Regular json
+    save_embeddings_with_spark(WIKI_DATA_DIR_JSON, model, EMBEDDING_DIR, FAISS_META_PATH) # Regular json
     # create_ivfpq_faiss_index(EMBEDDING_DIR, FAISS_INDEX_PATH)
 
-    article_titles = load_articles_titles_only(WIKI_DATA_DIR_JSONL) # jsonl
-    index, all_texts, text_to_meta = load_faiss_index(FAISS_INDEX_PATH, FAISS_META_PATH)
+    # article_titles = load_articles_titles_only(WIKI_DATA_DIR_JSONL) # jsonl
+    # index, all_texts, text_to_meta = load_faiss_index(FAISS_INDEX_PATH, FAISS_META_PATH)
 
-    mine_triplets_streaming(
-        para_db_path=PARAGRAPH_DB_PATH,
-        article_titles=article_titles,
-        model=model,
-        index=index,
-        all_texts=all_texts,
-        text_to_meta=text_to_meta,
-        output_path=TRIPLET_OUTPUT_PATH
-    )
+    # mine_triplets_streaming(
+    #     para_db_path=PARAGRAPH_DB_PATH,
+    #     article_titles=article_titles,
+    #     model=model,
+    #     index=index,
+    #     all_texts=all_texts,
+    #     text_to_meta=text_to_meta,
+    #     output_path=TRIPLET_OUTPUT_PATH
+    # )
 

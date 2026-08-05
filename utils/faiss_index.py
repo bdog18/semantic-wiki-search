@@ -3,6 +3,7 @@ import numpy as np
 import faiss
 from glob import glob
 from tqdm import tqdm
+import json
 
 def create_faiss_index(faiss_idx_path, article_embedding_path):
     if not os.path.isfile(faiss_idx_path):
@@ -56,3 +57,10 @@ def query_faiss(faiss_idx_path, query_embedding, k):
     # Search FAISS (returns distances and indices)
     _, indices = index.search(query_embedding, k)
     return indices
+
+def load_faiss_index(index_path, meta_path):
+    print("Loading FAISS index...")
+    index = faiss.read_index(index_path)
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    return index, meta["all_texts"], meta["text_to_meta"]
