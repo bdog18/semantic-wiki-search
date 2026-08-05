@@ -73,13 +73,30 @@ def build_flat_index_from_manifest(embeddings_dir: str, meta_conn, index_path: s
     return index
 
 
+def _default_ivfpq_params(total_rows: int) -> tuple[int, int]:
+    """nlist/train_size scaled to corpus size.
+
+    FAISS's own rule of thumb is nlist ~ 4*sqrt(N) to 16*sqrt(N); a fixed
+    nlist=100 (fine for a few-hundred-row smoke test) means every cluster
+    holds a huge fraction of the corpus at real Wikipedia scale (~70M
+    paragraphs), making every query scan a large chunk of the index. Scale it
+    with corpus size instead, capped so training and per-query
+    cluster-selection overhead stay reasonable. train_size is kept above
+    FAISS's ~39-training-points-per-centroid warning threshold rather than
+    left at a fixed 100k that may under-train a larger nlist.
+    """
+    nlist = max(100, min(65536, int(4 * (total_rows ** 0.5))))
+    train_size = min(total_rows, max(100_000, 40 * nlist))
+    return nlist, train_size
+
+
 def build_ivfpq_index_from_manifest(
     embeddings_dir: str,
     meta_conn,
     index_path: str,
-    nlist: int = 100,
+    nlist: int | None = None,
     nprobe: int = 10,
-    train_size: int = 100000,
+    train_size: int | None = None,
     batch_size: int = 1000,
     m: int = 16,
     nbits: int = 8,
@@ -88,7 +105,14 @@ def build_ivfpq_index_from_manifest(
     if not manifest:
         raise ValueError(f"No manifest entries found for {embeddings_dir}; was `swsearch embed` run against this meta db?")
 
-    logger.info("Sampling vectors for IVF-PQ training...")
+    total_rows = sum(row_count for _, row_count in manifest)
+    default_nlist, default_train_size = _default_ivfpq_params(total_rows)
+    if nlist is None:
+        nlist = default_nlist
+    if train_size is None:
+        train_size = default_train_size
+
+    logger.info("Sampling vectors for IVF-PQ training (nlist=%d, train_size=%d)...", nlist, train_size)
     sampled = []
     for vectors in _iter_manifest_batches(embeddings_dir, manifest):
         for vec in vectors:

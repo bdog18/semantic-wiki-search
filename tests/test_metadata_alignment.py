@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from swsearch.index.faiss_store import IndexAlignmentError, build_flat_index_from_manifest
+from swsearch.index.faiss_store import IndexAlignmentError, _default_ivfpq_params, build_flat_index_from_manifest
 from swsearch.metadata.store import (
     append_faiss_meta_batch,
     create_faiss_meta_db,
@@ -52,3 +52,25 @@ def test_build_index_from_manifest_raises_on_mismatch(tmp_path):
 
     with pytest.raises(IndexAlignmentError):
         build_flat_index_from_manifest(str(embeddings_dir), meta_conn, str(index_path))
+
+
+def test_default_ivfpq_params_uses_floor_for_small_corpora():
+    # A few-hundred-row smoke-test corpus shouldn't get an oversized nlist.
+    nlist, train_size = _default_ivfpq_params(500)
+    assert nlist == 100
+    assert train_size == 500  # can't train on more points than exist
+
+
+def test_default_ivfpq_params_scales_with_corpus_size():
+    # ~70M paragraphs (a real full-enwiki run) should get a much larger nlist
+    # than the 100 that was hardcoded before -- that's the whole point of
+    # this: fixed nlist=100 left every cluster holding ~700k vectors.
+    nlist, train_size = _default_ivfpq_params(70_365_524)
+    assert nlist > 30_000
+    assert nlist <= 65536  # capped
+    assert train_size >= 40 * nlist  # stays above FAISS's training-point warning floor
+
+
+def test_default_ivfpq_params_caps_nlist_for_huge_corpora():
+    nlist, _ = _default_ivfpq_params(10_000_000_000)
+    assert nlist == 65536
