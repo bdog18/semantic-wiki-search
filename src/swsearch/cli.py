@@ -87,6 +87,7 @@ def embed(
 def build_index(
     embeddings_dir: Path = typer.Option(settings.paths.embeddings_dir, help="Directory of .npy embedding batches from `swsearch embed`."),
     index_path: Path = typer.Option(settings.paths.faiss_index_path, help="Where to write the FAISS index."),
+    meta_db: Path = typer.Option(settings.paths.faiss_meta_db_path, help="FAISS metadata SQLite store matching embeddings_dir (from `swsearch embed`)."),
     index_type: str = typer.Option("flat", help="Index type: 'flat' (default, proven path) or 'ivfpq'."),
 ) -> None:
     """Build a FAISS index from embed's output, in the exact order recorded
@@ -94,7 +95,7 @@ def build_index(
     from swsearch.index.faiss_store import build_flat_index_from_manifest, build_ivfpq_index_from_manifest
     from swsearch.metadata.store import load_faiss_meta_sqlite
 
-    meta_conn = load_faiss_meta_sqlite(str(settings.paths.faiss_meta_db_path))
+    meta_conn = load_faiss_meta_sqlite(str(meta_db))
     if index_type == "flat":
         build_flat_index_from_manifest(str(embeddings_dir), meta_conn, str(index_path))
     elif index_type == "ivfpq":
