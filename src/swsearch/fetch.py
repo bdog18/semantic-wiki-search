@@ -17,6 +17,7 @@ from pathlib import Path
 
 import requests
 
+from swsearch import __version__
 from swsearch.config import REPO_ROOT, settings
 from swsearch.logutil import get_logger
 
@@ -30,6 +31,13 @@ SQL_DUMP_URLS = {
     "linktarget": "https://dumps.wikimedia.org/enwiki/latest/enwiki-latest-linktarget.sql.gz",
 }
 
+# requests' default User-Agent (python-requests/x.y) gets a flat 403 from
+# dumps.wikimedia.org -- confirmed live: identical request, only the UA
+# header differed, 403 vs 200. Wikimedia's User-Agent policy rejects generic/
+# unlabeled clients; a descriptive UA is required, not just polite.
+# https://meta.wikimedia.org/wiki/User-Agent_policy
+_REQUEST_HEADERS = {"User-Agent": f"swsearch-pipeline/{__version__} (local research project; no public contact)"}
+
 
 def _download(url: str, dest_path: Path, chunk_size: int = 1 << 20) -> None:
     """Stream-download url to dest_path via a .part temp file, so a killed
@@ -37,7 +45,7 @@ def _download(url: str, dest_path: Path, chunk_size: int = 1 << 20) -> None:
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = dest_path.with_name(dest_path.name + ".part")
     logger.info("Downloading %s -> %s", url, dest_path)
-    with requests.get(url, stream=True, timeout=60) as resp:
+    with requests.get(url, stream=True, timeout=60, headers=_REQUEST_HEADERS) as resp:
         resp.raise_for_status()
         written = 0
         with open(tmp_path, "wb") as f:

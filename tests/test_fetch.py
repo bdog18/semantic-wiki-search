@@ -14,6 +14,39 @@ def fake_settings(tmp_path, monkeypatch):
     return fake
 
 
+def test_download_sends_a_descriptive_user_agent(tmp_path, monkeypatch):
+    # dumps.wikimedia.org 403s requests' default "python-requests/x.y" UA --
+    # confirmed live against the real endpoint, identical request otherwise.
+    captured = {}
+
+    class FakeResponse:
+        headers = {}
+
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            return iter([b"data"])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_get(url, stream, timeout, headers):
+        captured["headers"] = headers
+        return FakeResponse()
+
+    monkeypatch.setattr(fetch.requests, "get", fake_get)
+
+    fetch._download("https://example.org/f", tmp_path / "f")
+
+    assert "User-Agent" in captured["headers"]
+    assert captured["headers"]["User-Agent"] != ""
+    assert "python-requests" not in captured["headers"]["User-Agent"]
+
+
 def test_ensure_xml_dump_skips_when_present(fake_settings, monkeypatch):
     dest = fake_settings.paths.raw_dir / "enwiki-latest-pages-articles.xml.bz2"
     dest.parent.mkdir(parents=True)
