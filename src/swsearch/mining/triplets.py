@@ -2,7 +2,7 @@ import gc
 import json
 import os
 import time
-from multiprocessing import Pool, cpu_count
+from multiprocessing import cpu_count, get_context
 
 import faiss
 import torch
@@ -17,9 +17,10 @@ from swsearch.metadata.store import get_text_and_meta_from_db, load_faiss_meta_s
 
 logger = get_logger(__name__)
 
-# Globals populated once per worker process by init_worker (Pool workers are
-# forked on Linux, so these are set up once and reused across every file the
-# worker processes -- not re-initialized per task).
+# Globals populated once per worker process by init_worker (workers are
+# spawned -- see get_context("spawn") below -- so these are set up once per
+# process and reused across every file that process handles, not
+# re-initialized per task).
 _model = None
 _index = None
 _faiss_meta_conn = None
@@ -250,7 +251,16 @@ def mine_triplets(
     logger.info("Mining triplets with %d workers over %d files...", num_workers, len(files_to_process))
     start_time = time.time()
 
-    with Pool(
+    # Explicit "spawn" context, not the default Pool(): each worker loads its
+    # own SentenceTransformer onto CUDA (init_worker), but the parent process
+    # already touches CUDA itself (swsearch.config's device auto-detection
+    # calls torch.cuda.is_available() at import time). Forking from a
+    # CUDA-touched parent -- which is what plain Pool() does here, since this
+    # Python's default start method is "forkserver", not "fork" -- inherits
+    # that already-initialized CUDA state, and every worker's own CUDA init
+    # then fails with "Cannot re-initialize CUDA in forked subprocess". Spawn
+    # starts each worker as a fresh process with no inherited CUDA state.
+    with get_context("spawn").Pool(
         processes=num_workers,
         initializer=init_worker,
         initargs=(index_path, meta_db_path, article_titles_path, link_db_path, settings.model.embedding_model_name),
