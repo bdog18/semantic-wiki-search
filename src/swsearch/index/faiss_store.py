@@ -16,8 +16,22 @@ class IndexAlignmentError(RuntimeError):
 
 
 def load_index(index_path: str) -> faiss.Index:
+    """Load a FAISS index, building a direct map for IVF-family indexes
+    (IVF-PQ, IVF-Flat, ...) so `.reconstruct()` works on them.
+
+    Without this, IndexIVFPQ.reconstruct() raises RuntimeError, which
+    search.engine.SearchEngine silently catches and falls back to raw (PQ-
+    approximated) L2 distance instead of the intended cosine-similarity
+    rerank -- functional, but the resulting "scores" are an uncalibrated,
+    unbounded distance rather than the expected -1..1 cosine range, and
+    ranking quality suffers since it's comparing lossy PQ distances instead
+    of reconstructed-vector cosine similarity.
+    """
     logger.info("Loading FAISS index from %s", index_path)
-    return faiss.read_index(index_path)
+    index = faiss.read_index(index_path)
+    if isinstance(index, faiss.IndexIVF):
+        index.make_direct_map()
+    return index
 
 
 def query_faiss(index_path: str, query_embedding: np.ndarray, k: int) -> np.ndarray:

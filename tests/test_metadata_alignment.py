@@ -1,7 +1,14 @@
+import faiss
 import numpy as np
 import pytest
 
-from swsearch.index.faiss_store import IndexAlignmentError, _default_ivfpq_params, build_flat_index_from_manifest
+from swsearch.index.faiss_store import (
+    IndexAlignmentError,
+    _default_ivfpq_params,
+    build_flat_index_from_manifest,
+    build_ivfpq_index_from_manifest,
+    load_index,
+)
 from swsearch.metadata.store import (
     append_faiss_meta_batch,
     create_faiss_meta_db,
@@ -74,3 +81,31 @@ def test_default_ivfpq_params_scales_with_corpus_size():
 def test_default_ivfpq_params_caps_nlist_for_huge_corpora():
     nlist, _ = _default_ivfpq_params(10_000_000_000)
     assert nlist == 65536
+
+
+def test_reconstruct_works_after_loading_an_ivfpq_index(tmp_path):
+    # IndexIVFPQ.reconstruct() raises RuntimeError without a direct map --
+    # search.engine.SearchEngine relies on reconstruct() for its cosine-
+    # similarity rerank, silently falling back to raw (uncalibrated) distance
+    # if it fails. This is what a real ivfpq run hit live.
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+    meta_db_path = tmp_path / "meta.db"
+    index_path = tmp_path / "ivfpq.index"
+
+    meta_conn = create_faiss_meta_db(str(meta_db_path))
+    total = 0
+    for seq in range(4):
+        total += _write_batch(
+            embeddings_dir, meta_conn, seq, total,
+            [f"t{seq}-{i}" for i in range(50)], [f"Article {seq}"] * 50, dim=16,
+        )
+
+    build_ivfpq_index_from_manifest(
+        str(embeddings_dir), meta_conn, str(index_path), nlist=4, m=4, nbits=4, train_size=total,
+    )
+
+    loaded = load_index(str(index_path))
+    assert isinstance(loaded, faiss.IndexIVFPQ)
+    vec = loaded.reconstruct(0)  # raises RuntimeError pre-fix
+    assert vec.shape == (16,)
