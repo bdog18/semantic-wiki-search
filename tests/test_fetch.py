@@ -73,6 +73,41 @@ def test_ensure_xml_dump_downloads_when_missing(fake_settings, monkeypatch):
     download.assert_called_once_with(fetch.XML_DUMP_URL, dest)
 
 
+def test_download_uses_a_process_unique_temp_filename(tmp_path):
+    # Two overlapping downloads to the same dest must never share a temp
+    # path -- this is what let one process's completed rename crash a
+    # concurrent process's rename of an already-renamed-away .part file.
+    tmp_1 = fetch._unique_temp_path(tmp_path / "f")
+    tmp_2 = fetch._unique_temp_path(tmp_path / "f")
+
+    assert tmp_1 != tmp_2
+    assert tmp_1.parent == tmp_path
+    assert tmp_1.name.startswith("f.part-")
+
+
+def test_download_cleans_up_temp_file_on_partial_failure(tmp_path, monkeypatch):
+    class FlakyResponse:
+        def raise_for_status(self):
+            pass
+
+        def iter_content(self, chunk_size):
+            yield b"partial data"
+            raise ConnectionError("connection dropped mid-stream")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(fetch.requests, "get", lambda *a, **k: FlakyResponse())
+
+    with pytest.raises(ConnectionError):
+        fetch._download("https://example.org/f", tmp_path / "f")
+
+    assert list(tmp_path.glob("f.part-*")) == []  # partial temp file was cleaned up, not left as debris
+
+
 def test_ensure_sql_dumps_skips_present_and_fetches_missing(fake_settings, monkeypatch):
     # page.sql is already there; pagelinks/linktarget are not.
     fake_settings.paths.page_sql_path.parent.mkdir(parents=True, exist_ok=True)
@@ -95,6 +130,36 @@ def test_ensure_sql_dumps_skips_present_and_fetches_missing(fake_settings, monke
     assert linktarget.read_bytes() == b"sql content"
     assert len(fetched_urls) == 2  # only the two missing dumps were fetched
     assert not pagelinks.with_name(pagelinks.name + ".gz").exists()  # .gz cleaned up
+
+
+def test_ensure_sql_dumps_skips_download_when_gz_already_present(fake_settings, monkeypatch):
+    # e.g. a prior run downloaded page.sql.gz fully but crashed before
+    # decompressing it -- a retry shouldn't re-download ~2GB for nothing.
+    gz_path = fake_settings.paths.page_sql_path.with_name(fake_settings.paths.page_sql_path.name + ".gz")
+    gz_path.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(gz_path, "wb") as f:
+        f.write(b"already downloaded")
+
+    fetched = []
+
+    def fake_download(url, dest_path):
+        fetched.append(dest_path)
+        with gzip.open(dest_path, "wb") as f:
+            f.write(b"freshly downloaded")
+
+    monkeypatch.setattr(fetch, "_download", fake_download)
+
+    page, pagelinks, linktarget = fetch.ensure_sql_dumps()
+
+    assert page.read_bytes() == b"already downloaded"
+    assert not gz_path.exists()  # decompressed then cleaned up
+    assert pagelinks.read_bytes() == b"freshly downloaded"
+    assert linktarget.read_bytes() == b"freshly downloaded"
+    # page's .gz was already there -- only pagelinks/linktarget got downloaded
+    assert fetched == [
+        pagelinks.with_name(pagelinks.name + ".gz"),
+        linktarget.with_name(linktarget.name + ".gz"),
+    ]
 
 
 def test_ensure_wikiextractor_output_skips_when_present(fake_settings, monkeypatch):

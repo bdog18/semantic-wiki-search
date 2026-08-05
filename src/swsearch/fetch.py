@@ -9,9 +9,11 @@ already used.
 """
 import gzip
 import importlib.util
+import os
 import shutil
 import subprocess
 import sys
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -39,20 +41,36 @@ SQL_DUMP_URLS = {
 _REQUEST_HEADERS = {"User-Agent": f"swsearch-pipeline/{__version__} (local research project; no public contact)"}
 
 
+def _unique_temp_path(dest_path: Path) -> Path:
+    """A .part temp path unique to this process+call, so two overlapping
+    `swsearch pipeline` invocations targeting the same dest_path (e.g.
+    accidentally started in two terminals against the same data root) can
+    never collide on the same temp path -- a plain `dest_path.name + ".part"`
+    was hit live: two runs' writes landed on the same inode, and whichever
+    finished first renamed the path out from under the other, which then
+    crashed with FileNotFoundError trying to rename a .part that had already
+    been renamed away."""
+    return dest_path.with_name(f"{dest_path.name}.part-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+
+
 def _download(url: str, dest_path: Path, chunk_size: int = 1 << 20) -> None:
-    """Stream-download url to dest_path via a .part temp file, so a killed
-    download can't be mistaken for a complete one on the next run."""
+    """Stream-download url to dest_path via a per-process-unique .part temp
+    file, so a killed or superseded download can't be mistaken for a
+    complete one, and can't collide with another process's in-flight one."""
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = dest_path.with_name(dest_path.name + ".part")
+    tmp_path = _unique_temp_path(dest_path)
     logger.info("Downloading %s -> %s", url, dest_path)
-    with requests.get(url, stream=True, timeout=60, headers=_REQUEST_HEADERS) as resp:
-        resp.raise_for_status()
-        written = 0
-        with open(tmp_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=chunk_size):
-                f.write(chunk)
-                written += len(chunk)
-    tmp_path.rename(dest_path)
+    try:
+        with requests.get(url, stream=True, timeout=60, headers=_REQUEST_HEADERS) as resp:
+            resp.raise_for_status()
+            written = 0
+            with open(tmp_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=chunk_size):
+                    f.write(chunk)
+                    written += len(chunk)
+        tmp_path.rename(dest_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)  # no-op if the rename above succeeded
     logger.info("Downloaded %s (%d bytes)", dest_path, written)
 
 
@@ -114,7 +132,10 @@ def ensure_sql_dumps() -> tuple[Path, Path, Path]:
             logger.info("%s.sql already present at %s", name, dest)
             continue
         gz_path = dest.with_name(dest.name + ".gz")
-        _download(SQL_DUMP_URLS[name], gz_path)
+        if gz_path.is_file():
+            logger.info("%s.sql.gz already downloaded at %s; decompressing", name, gz_path)
+        else:
+            _download(SQL_DUMP_URLS[name], gz_path)
         logger.info("Decompressing %s -> %s", gz_path, dest)
         tmp_dest = dest.with_name(dest.name + ".part")
         with gzip.open(gz_path, "rb") as f_in, open(tmp_dest, "wb") as f_out:
