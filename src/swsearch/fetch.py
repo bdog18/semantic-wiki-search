@@ -53,7 +53,20 @@ def _is_wikiextractor_installed() -> bool:
 
 
 def ensure_wikiextractor_installed() -> None:
-    """Download (if needed) and pip-install the vendored wikiextractor tool."""
+    """Download (if needed) and pip-install the vendored wikiextractor tool.
+
+    Known gotcha: attardi/wikiextractor's extract.py (as of the version
+    vendored here) uses inline regex flags like (?i) in the middle of a
+    pattern (ExtLinkBracketedRegex, EXT_IMAGE_REGEX) -- valid pre-3.11, but a
+    hard `re.PatternError: global flags not at the start of the expression`
+    on Python 3.11+, which breaks `import wikiextractor.extract` entirely
+    (and therefore this pip install). Fix by rewriting those two patterns'
+    `(?i)` to scoped `(?i:...)` flags in wikiextractor-master/wikiextractor/
+    extract.py -- same meaning, valid at any position. wikiextractor-master/
+    is gitignored (vendored, not part of this package), so that fix doesn't
+    travel with the repo; if this directory is ever deleted and re-fetched
+    fresh from GitHub on a Python 3.11+ interpreter, re-apply it.
+    """
     if _is_wikiextractor_installed():
         return
 
