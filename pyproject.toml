@@ -18,6 +18,7 @@ dependencies = [
     "pydantic-settings",
     "python-dotenv",
     "gradio",
+    "requests",
 ]
 
 [project.scripts]

@@ -27,6 +27,28 @@ def _main(
 
 
 @app.command()
+def pipeline(
+    with_triplets: bool = typer.Option(
+        False, "--with-triplets", help="Also mine hard-negative triplets after building the index "
+        "(slow; only needed for the archived custom-encoder research -- search/evaluate don't use it)."
+    ),
+    skip_fetch: bool = typer.Option(
+        False, "--skip-fetch", help="Skip checking/downloading raw dumps and running wikiextractor; "
+        "assume data/raw is already fully populated."
+    ),
+    index_type: str = typer.Option("flat", help="Index type: 'flat' (default, proven path) or 'ivfpq'."),
+) -> None:
+    """Run the full pipeline end to end: fetch raw data if missing (download
+    the XML/SQL dumps and run wikiextractor, skipping anything already on
+    disk) -> build link graph -> extract -> embed -> build index ->
+    optionally mine triplets."""
+    from swsearch.pipeline import run_full_pipeline
+
+    run_full_pipeline(with_triplets=with_triplets, skip_fetch=skip_fetch, index_type=index_type)
+    typer.echo("Full pipeline complete.")
+
+
+@app.command()
 def extract(
     input_dir: Path = typer.Option(settings.paths.extracted_dir, help="Directory of raw wikiextractor XML fragments."),
     output_json_dir: Path = typer.Option(settings.paths.json_dir, help="Where to write cleaned per-article JSON."),

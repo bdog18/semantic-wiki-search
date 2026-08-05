@@ -19,6 +19,8 @@ MODULES = [
     "swsearch.search.engine",
     "swsearch.eval.metrics",
     "swsearch.tools.inspect_index",
+    "swsearch.fetch",
+    "swsearch.pipeline",
 ]
 
 

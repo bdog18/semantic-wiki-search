@@ -1,8 +1,23 @@
+import os
+import sys
 from pathlib import Path
 
 from pyspark.sql import SparkSession
 
 from swsearch.config import REPO_ROOT, settings
+
+# Pin worker/driver Python to sys.executable (the current venv) rather than
+# letting PySpark fall back to whatever `python3` is first on PATH -- without
+# this, local[*] workers spawn using the system Python, which has neither
+# swsearch nor its dependencies installed. Any job that ships a closure
+# referencing swsearch.* (e.g. linkgraph/build.py's SQL-line parsers, pickled
+# and sent to workers by flatMap) then fails on the worker side with
+# `ModuleNotFoundError: No module named 'swsearch'`. This has to be an
+# environment variable, set before the JVM/SparkContext is created --
+# `spark.pyspark.python`/`spark.pyspark.driver.python` SparkConf keys exist
+# but were not honored for local-mode worker spawning in testing here.
+os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
 
 def get_spark_session(

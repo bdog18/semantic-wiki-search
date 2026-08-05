@@ -67,11 +67,15 @@ working off-the-shelf embedding pipeline (see **Research** below).
 > **Note on existing data**: `data/processed/faiss_index/` currently holds
 > ~120GB of output from the *pre-refactor* pipeline, including the
 > `EMBEDDING_DIR`/`EMBEDDINGS_DIR` path-drift bug that produced 65,250
-> duplicate `.npy` files. It's being kept as-is rather than deleted
-> automatically; regenerating it with the new pipeline is a deliberate,
-> separate, full-scale action, not something any `swsearch` command runs by
-> default. Always point `SWSEARCH_PATHS__DATA_ROOT` (or per-command path
-> flags) at a scratch location when testing against a subset of data.
+> duplicate `.npy` files, and `data/custom_model/` holds another ~97GB of
+> stale pre-refactor artifacts nothing in the new pipeline reads or writes.
+> `swsearch pipeline` (see **CLI** below) can now regenerate everything under
+> `data/processed/` from `data/raw/` (which stays untouched) in one command,
+> so both directories are safe to delete once a fresh pipeline run is
+> verified good -- this isn't done automatically, it's a deliberate,
+> separate, full-scale action for whenever that verification has happened.
+> Always point `SWSEARCH_PATHS__DATA_ROOT` (or per-command path flags) at a
+> scratch location when testing against a subset of data.
 
 ---
 
@@ -115,6 +119,7 @@ All paths resolve to absolute paths (anchored to the repo root by default), so
 ## CLI
 
 ```
+swsearch pipeline         [--with-triplets] [--skip-fetch] [--index-type flat|ivfpq]
 swsearch extract          [--input-dir] [--output-json-dir] [--output-jsonl-dir] [--article-titles-path]
 swsearch build-linkgraph  [--page-sql] [--pagelinks-sql] [--linktarget-sql] [--jsonl-out] [--db-out]
 swsearch embed            [--input-dir] [--output-dir] [--meta-db] [--model-name] [--batch-size]
@@ -127,7 +132,7 @@ swsearch tools convert-faiss-meta [--json-path] [--db-path] [--yes]
 ```
 
 Every command has sensible defaults derived from `Settings` (all under
-`data/` by default) but every path can be overridden per-command, so a full
+`data/` by default) but every path can be overridden per-command, so the
 pipeline can be run against an isolated scratch corpus for testing without
 touching real data:
 
@@ -137,6 +142,35 @@ SWSEARCH_PATHS__DATA_ROOT=/tmp/scratch-corpus swsearch embed
 SWSEARCH_PATHS__DATA_ROOT=/tmp/scratch-corpus swsearch build-index
 SWSEARCH_PATHS__DATA_ROOT=/tmp/scratch-corpus swsearch search "who invented science?"
 ```
+
+### `swsearch pipeline`: run everything end to end
+
+`swsearch pipeline` chains every stage above into one command: fetch raw data
+if it isn't already on disk (downloads the XML dump + the 3 SQL link-graph
+dumps from dumps.wikimedia.org and runs `wikiextractor`, skipping anything
+already present rather than redoing it) -> build the link graph -> extract ->
+embed -> build the index. Triplet mining is opt-in (`--with-triplets`) since
+nothing in the search/evaluate path consumes it -- it only feeds the archived
+custom-encoder research.
+
+```bash
+swsearch pipeline                 # fetch-if-missing -> linkgraph -> extract -> embed -> index
+swsearch pipeline --skip-fetch    # assume data/raw is already fully populated
+swsearch pipeline --with-triplets # also mine triplets at the end
+```
+
+Because every raw-data step (`fetch.py`) checks for its expected output
+first, deleting `data/processed/` and `data/custom_model/` and rerunning
+`swsearch pipeline` regenerates everything from `data/raw/` (which is left
+untouched) without re-downloading anything that's already there. This is the
+safe way to reclaim disk space from stale pre-refactor artifacts.
+
+The pipeline can run for hours end to end (a full-corpus embed/mine pass
+especially), so each stage logs a start banner with total elapsed time and a
+finish banner with that stage's own duration and how many stages remain --
+e.g. `=== Stage 4/6: embed paragraphs [pipeline elapsed: 42m10s] ===` --
+independent of the item-by-item `tqdm` progress bars each stage already
+prints for its own work.
 
 ---
 
@@ -159,6 +193,8 @@ semantic-wiki-search/
 ├── src/swsearch/
 │   ├── config.py                  # pydantic-settings singleton (SWSEARCH_ env prefix)
 │   ├── cli.py                     # typer app: swsearch <command>
+│   ├── pipeline.py                # `swsearch pipeline`: chains every stage, with progress/timing
+│   ├── fetch.py                   # idempotent raw-data fetch (dump/SQL downloads, wikiextractor)
 │   ├── logutil.py                 # logging setup
 │   ├── common/                    # shared Spark session + paragraph-split helpers
 │   ├── extract/wikidump.py        # XML dump -> cleaned JSON/JSONL + title->url lookup
