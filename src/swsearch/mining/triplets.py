@@ -1,6 +1,7 @@
 import gc
 import json
 import os
+import random
 import time
 from multiprocessing import cpu_count, get_context
 
@@ -66,7 +67,15 @@ def init_worker(faiss_index_path: str, faiss_meta_db_path: str, article_titles_p
 def process_batch(anchors: list[str], positives: list[str], metadata: list[tuple[str, set[str]]], out_f, neg_pool_size: int) -> int:
     """Encode a batch of anchor/positive pairs and mine one hard negative each
     from the FAISS index, excluding paragraphs from the same or a linked
-    article. Returns the number of triplets written."""
+    article. The negative is sampled randomly from the filtered candidate
+    pool rather than always taking the nearest neighbor -- always picking
+    the single hardest candidate has no relief once the model separates it
+    from the anchor, and the link graph is an incomplete proxy for "these
+    are actually unrelated" (two topically-close articles aren't always
+    mutually hyperlinked), so the nearest hit is disproportionately likely
+    to be a false negative. Sampling across the pool still yields hard
+    negatives without letting any single systematic false negative dominate
+    training. Returns the number of triplets written."""
     if not anchors or not _model or not _index or not _faiss_meta_conn:
         return 0
 
@@ -84,13 +93,13 @@ def process_batch(anchors: list[str], positives: list[str], metadata: list[tuple
         _, I = _index.search(anchor_embeddings.astype('float32'), neg_pool_size)
 
         for idx, (anchor, positive, (src_title, linked_titles)) in enumerate(zip(anchors, positives, metadata)):
-            negative = None
+            candidates = []
             for j in I[idx]:
                 neg_para, neg_title = get_text_and_meta_from_db(_faiss_meta_conn, int(j))
                 if neg_para and neg_title and neg_title != src_title and neg_title not in linked_titles:
                     if len(neg_para) > min_len and neg_para != anchor and neg_para != positive:
-                        negative = neg_para
-                        break
+                        candidates.append(neg_para)
+            negative = random.choice(candidates) if candidates else None
 
             if negative:
                 triplet = {
@@ -151,25 +160,21 @@ def process_file_worker(args: tuple[str, str, int]) -> tuple[str, int]:
                 if not linked_titles:
                     continue
 
-                triplet_count = 0
-                for i in range(1, min(len(paras), m.max_triplets_per_article + 1)):
-                    anchor = paras[i]
-                    if len(anchor) <= m.min_paragraph_length:
-                        continue
-
-                    positive = None
-                    if i + 1 < len(paras):
-                        positive = paras[i + 1]
-                    elif len(paras) > 2:
-                        positive = paras[0] if i != 0 else paras[2]
-
-                    if positive and len(positive) > m.min_paragraph_length:
-                        batch_anchors.append(anchor)
-                        batch_positives.append(positive)
-                        batch_metadata.append((title, linked_titles))
-                        triplet_count += 1
-                        if triplet_count >= m.max_triplets_per_article:
-                            break
+                # Anchor is the lead paragraph, not an arbitrary detail
+                # paragraph: it's the most topic-representative text in the
+                # article (Wikipedia convention puts the definitional
+                # summary there), which is structurally much closer to a
+                # short natural-language query than "paragraph N" is.
+                # Paired against every other paragraph in the article
+                # (rather than only its immediate successor) so "similar"
+                # means "supports this article's topic," not "happens to
+                # sit next to it in the prose." paras is already filtered to
+                # > min_paragraph_length, so no length re-check is needed.
+                anchor = paras[0]
+                for positive in paras[1 : m.max_triplets_per_article + 1]:
+                    batch_anchors.append(anchor)
+                    batch_positives.append(positive)
+                    batch_metadata.append((title, linked_titles))
 
                 if len(batch_anchors) >= m.batch_size:
                     triplets_written += process_batch(batch_anchors, batch_positives, batch_metadata, out_f, m.negative_pool_size)

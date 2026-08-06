@@ -161,12 +161,14 @@ def train_transfer(
     gradient_accumulation_steps: int = typer.Option(4, help="Accumulate gradients over this many micro-batches (effective batch size = batch_size * this)."),
     max_steps: int = typer.Option(20000, help="Total training steps (triplets stream, so there's no fixed epoch count)."),
     learning_rate: float = typer.Option(2e-5, help="Learning rate."),
-    margin: float = typer.Option(5.0, help="TripletLoss margin."),
+    scale: float = typer.Option(20.0, help="MultipleNegativesRankingLoss softmax temperature (higher = sharper)."),
 ) -> None:
     """Fine-tune a pretrained SentenceTransformer on mined triplets
-    (transfer learning). Reuses the triplets mined once against the baseline
-    index -- no separate mining run is needed for this. The saved model can
-    then be passed to `swsearch embed --model-name <output_dir>`."""
+    (transfer learning) with MultipleNegativesRankingLoss, keeping whichever
+    checkpoint scores best on a held-out triplet split. Reuses the triplets
+    mined once against the baseline index -- no separate mining run is
+    needed for this. The saved model can then be passed to
+    `swsearch embed --model-name <output_dir>`."""
     from swsearch.train import train_transfer_model
 
     train_transfer_model(
@@ -177,7 +179,7 @@ def train_transfer(
         gradient_accumulation_steps=gradient_accumulation_steps,
         max_steps=max_steps,
         learning_rate=learning_rate,
-        margin=margin,
+        scale=scale,
     )
     typer.echo(f"Fine-tuned model saved to {output_dir}")
 

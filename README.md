@@ -148,7 +148,7 @@ swsearch build-linkgraph  [--page-sql] [--pagelinks-sql] [--linktarget-sql] [--j
 swsearch embed            [--input-dir] [--output-dir] [--meta-db] [--model-name] [--batch-size]
 swsearch build-index      [--embeddings-dir] [--index-path] [--meta-db] [--index-type flat|ivfpq]
 swsearch mine-triplets    [--jsonl-dir] [--index-path] [--meta-db] [--link-db] [--out-dir] [--num-workers]
-swsearch train-transfer   [--triplets-dir] [--output-dir] [--base-model-name] [--batch-size] [--max-steps] [--learning-rate] [--margin]
+swsearch train-transfer   [--triplets-dir] [--output-dir] [--base-model-name] [--batch-size] [--max-steps] [--learning-rate] [--scale]
 swsearch search QUERY     [--k] [--index-path] [--meta-db]
 swsearch evaluate         [--test-queries] [--k-values "1,3,5,10"]
 swsearch tools inspect-index INDEX_PATH
