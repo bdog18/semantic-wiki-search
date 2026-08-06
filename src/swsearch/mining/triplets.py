@@ -14,7 +14,7 @@ from swsearch.common.textsplit import split_paragraphs
 from swsearch.config import settings
 from swsearch.linkgraph.store import get_links_for_title_sqlite, load_linkgraph_sqlite
 from swsearch.logutil import get_logger
-from swsearch.metadata.store import get_text_and_meta_from_db, load_faiss_meta_sqlite
+from swsearch.metadata.store import get_texts_and_meta_from_db, load_faiss_meta_sqlite
 
 logger = get_logger(__name__)
 
@@ -92,10 +92,17 @@ def process_batch(anchors: list[str], positives: list[str], metadata: list[tuple
 
         _, I = _index.search(anchor_embeddings.astype('float32'), neg_pool_size)
 
+        # One batched SQLite lookup for every candidate in the whole mining
+        # batch instead of one round trip per candidate -- with neg_pool_size
+        # candidates checked per anchor (no early break, since negatives are
+        # sampled from the full pool), that was up to
+        # len(anchors) * neg_pool_size individual queries per batch.
+        candidate_lookup = get_texts_and_meta_from_db(_faiss_meta_conn, [int(j) for row in I for j in row])
+
         for idx, (anchor, positive, (src_title, linked_titles)) in enumerate(zip(anchors, positives, metadata)):
             candidates = []
             for j in I[idx]:
-                neg_para, neg_title = get_text_and_meta_from_db(_faiss_meta_conn, int(j))
+                neg_para, neg_title = candidate_lookup.get(int(j), (None, None))
                 if neg_para and neg_title and neg_title != src_title and neg_title not in linked_titles:
                     if len(neg_para) > min_len and neg_para != anchor and neg_para != positive:
                         candidates.append(neg_para)

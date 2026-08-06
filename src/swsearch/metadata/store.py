@@ -82,6 +82,30 @@ def get_text_and_meta_from_db(conn: sqlite3.Connection, idx: int) -> tuple[str |
     return None, None
 
 
+def get_texts_and_meta_from_db(conn: sqlite3.Connection, indices: list[int]) -> dict[int, tuple[str, str]]:
+    """Batched counterpart to get_text_and_meta_from_db: one query (chunked
+    to stay under SQLite's bound-parameter limit) instead of one round trip
+    per idx. Built for triplet mining's negative-candidate lookups, where a
+    single mining batch can otherwise issue thousands of individual queries.
+    Returns {idx: (text, article_title)} for whichever indices exist;
+    missing/negative indices are simply absent from the result.
+    """
+    unique_indices = list({int(i) for i in indices if i >= 0})
+    if not unique_indices:
+        return {}
+
+    result: dict[int, tuple[str, str]] = {}
+    chunk_size = 500
+    cur = conn.cursor()
+    for start in range(0, len(unique_indices), chunk_size):
+        chunk = unique_indices[start : start + chunk_size]
+        placeholders = ",".join("?" * len(chunk))
+        cur.execute(f"SELECT idx, text, article_title FROM faiss_meta WHERE idx IN ({placeholders})", chunk)
+        for row in cur.fetchall():
+            result[row["idx"]] = (row["text"], row["article_title"])
+    return result
+
+
 def get_count_from_faiss_meta_db(conn: sqlite3.Connection) -> int:
     """Get total count of entries in FAISS metadata database."""
     cur = conn.cursor()
