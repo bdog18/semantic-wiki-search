@@ -66,9 +66,11 @@ def test_train_transfer_model_wires_trainer_correctly(tmp_path, monkeypatch):
         output_dir=str(output_dir),
         base_model_name="some-base-model",
         batch_size=8,
+        gradient_accumulation_steps=2,
         max_steps=100,
         learning_rate=1e-5,
         margin=2.5,
+        device="cpu",
     )
 
     model_ctor.assert_called_once()
@@ -82,7 +84,29 @@ def test_train_transfer_model_wires_trainer_correctly(tmp_path, monkeypatch):
     assert trainer_kwargs["loss"] is fake_loss
     assert trainer_kwargs["args"].max_steps == 100
     assert trainer_kwargs["args"].per_device_train_batch_size == 8
+    assert trainer_kwargs["args"].gradient_accumulation_steps == 2
+    assert trainer_kwargs["args"].fp16 is False  # only enabled on cuda
 
     fake_trainer.train.assert_called_once()
     fake_model.save.assert_called_once_with(str(output_dir))
     assert output_dir.is_dir()  # created up front so TrainingArguments/save have somewhere to write
+
+
+def test_train_transfer_model_enables_fp16_on_cuda(tmp_path, monkeypatch):
+    triplets_dir = tmp_path / "triplets"
+    triplets_dir.mkdir()
+    _write_triplets_file(triplets_dir / "wiki_0_triplets.jsonl", [{"anchor": "a", "positive": "p", "negative": "n", "source": "s", "url": ""}])
+
+    monkeypatch.setattr(train, "SentenceTransformer", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr(train.losses, "TripletLoss", MagicMock(return_value=MagicMock()))
+    trainer_ctor = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(train, "SentenceTransformerTrainer", trainer_ctor)
+
+    train.train_transfer_model(
+        triplets_dir=str(triplets_dir),
+        output_dir=str(tmp_path / "out"),
+        device="cuda",
+    )
+
+    _, trainer_kwargs = trainer_ctor.call_args
+    assert trainer_kwargs["args"].fp16 is True
