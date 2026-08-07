@@ -20,13 +20,24 @@ from swsearch.logutil import get_logger
 logger = get_logger(__name__)
 
 
-def load_triplet_dataset(triplets_dir: str, holdout_files: int = 1):
+def load_triplet_dataset(triplets_dir: str, holdout_files: int = 1, shuffle_buffer_size: int = 10_000):
     """Stream mined (anchor, positive, negative) triplets from JSONL files
     without loading the whole corpus into memory -- mining a full enwiki
     corpus can produce tens of millions of triplets, the same scale that
     OOM'd a flat FAISS index earlier this project. Extra columns the miner
     writes (source, url) are dropped; the loss/evaluator only want these
     three.
+
+    The training stream is shuffled with a buffer -- mining/triplets.py
+    writes every triplet for one article consecutively (they all share that
+    article's lead paragraph as the anchor), so an unshuffled stream feeds
+    the trainer long runs of same-anchor rows. That's harmless for
+    TripletLoss (each row's loss is independent), but MultipleNegativesRankingLoss
+    treats every other row's positive in a batch as an implicit negative for
+    this row's anchor -- with same-anchor rows clustered together, most of
+    those "negatives" are actually other valid positives for the same
+    article, actively teaching the model a contradictory signal. A large
+    shuffle buffer spreads same-article rows across many batches instead.
 
     Reserves holdout_files whole files as a small in-memory eval split (for
     TripletEvaluator/load_best_model_at_end -- see train_transfer_model) and
@@ -44,7 +55,11 @@ def load_triplet_dataset(triplets_dir: str, holdout_files: int = 1):
     n_holdout = min(holdout_files, max(len(files) - 1, 0))
     eval_files, train_files = files[:n_holdout], files[n_holdout:]
 
-    train_dataset = load_dataset("json", data_files=train_files, split="train", streaming=True).select_columns(columns)
+    train_dataset = (
+        load_dataset("json", data_files=train_files, split="train", streaming=True)
+        .select_columns(columns)
+        .shuffle(buffer_size=shuffle_buffer_size)
+    )
     eval_dataset = None
     if eval_files:
         eval_dataset = load_dataset("json", data_files=eval_files, split="train", streaming=False).select_columns(columns)

@@ -27,10 +27,13 @@ def test_load_triplet_dataset_streams_anchor_positive_negative_only(tmp_path):
 
     train_dataset, eval_dataset = train.load_triplet_dataset(str(tmp_path))
 
+    # train_dataset is shuffled (see load_triplet_dataset's docstring), so
+    # row order isn't guaranteed -- check contents/columns, not position.
     rows = list(train_dataset)
     assert len(rows) == 2
     assert set(rows[0].keys()) == {"anchor", "positive", "negative"}  # source/url dropped
-    assert rows[0] == {"anchor": "a1", "positive": "p1", "negative": "n1"}
+    assert {"anchor": "a1", "positive": "p1", "negative": "n1"} in rows
+    assert {"anchor": "a2", "positive": "p2", "negative": "n2"} in rows
     assert eval_dataset is None  # only one file -- nothing left to hold out
 
 
