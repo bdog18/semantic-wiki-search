@@ -149,8 +149,8 @@ swsearch embed            [--input-dir] [--output-dir] [--meta-db] [--model-name
 swsearch build-index      [--embeddings-dir] [--index-path] [--meta-db] [--index-type flat|ivfpq]
 swsearch mine-triplets    [--jsonl-dir] [--index-path] [--meta-db] [--link-db] [--out-dir] [--num-workers]
 swsearch train-transfer   [--triplets-dir] [--output-dir] [--base-model-name] [--batch-size] [--max-steps] [--learning-rate] [--scale]
-swsearch search QUERY     [--k] [--index-path] [--meta-db]
-swsearch evaluate         [--test-queries] [--k-values "1,3,5,10"]
+swsearch search QUERY     [--k] [--index-path] [--meta-db] [--model-name]
+swsearch evaluate         [--test-queries] [--k-values "1,3,5,10"] [--index-path] [--meta-db] [--model-name]
 swsearch tools inspect-index INDEX_PATH
 swsearch tools convert-faiss-meta [--json-path] [--db-path] [--yes]
 ```
@@ -222,7 +222,11 @@ separately per target model.
 index building (from those embeddings). Point each at its own directory so
 the three never collide -- `swsearch embed`/`swsearch build-index` already
 accept `--output-dir`/`--meta-db`/`--index-path`/`--model-name` overrides for
-exactly this:
+exactly this. **`swsearch search`/`swsearch evaluate` also need `--model-name`**
+whenever `--index-path` points at a non-baseline index -- the query has to be
+encoded with the same model that produced the index's embeddings, or the
+comparison is between two different vector spaces and the scores are
+meaningless:
 
 ```bash
 # 1. Mine triplets once, against the baseline index (already built)
@@ -245,7 +249,8 @@ swsearch build-index --index-type ivfpq \
 
 # 5. Evaluate each against the same test_queries.json for an apples-to-apples comparison
 swsearch evaluate --index-path data/processed/models/transfer_learning/paragraphs.index \
-  --meta-db data/processed/models/transfer_learning/paragraphs.index.meta.db
+  --meta-db data/processed/models/transfer_learning/paragraphs.index.meta.db \
+  --model-name data/processed/models/transfer_learning/model
 ```
 
 Embeddings/metadata/index are **not** shared between models -- each model
