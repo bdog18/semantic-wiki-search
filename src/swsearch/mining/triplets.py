@@ -167,18 +167,17 @@ def process_file_worker(args: tuple[str, str, int]) -> tuple[str, int]:
                 if not linked_titles:
                     continue
 
-                # Anchor is the lead paragraph, not an arbitrary detail
-                # paragraph: it's the most topic-representative text in the
-                # article (Wikipedia convention puts the definitional
-                # summary there), which is structurally much closer to a
-                # short natural-language query than "paragraph N" is.
-                # Paired against every other paragraph in the article
-                # (rather than only its immediate successor) so "similar"
-                # means "supports this article's topic," not "happens to
-                # sit next to it in the prose." paras is already filtered to
-                # > min_paragraph_length, so no length re-check is needed.
-                anchor = paras[0]
-                for positive in paras[1 : m.max_triplets_per_article + 1]:
+                # Anchor is the article title, not a paragraph of prose: a
+                # title is short, names a topic rather than describing it in
+                # a sentence, and is structurally much closer to a search
+                # query than any paragraph (lead included) is. Paired
+                # against every paragraph in the article -- the lead
+                # paragraph is no longer "spent" as the anchor, so it's a
+                # normal eligible positive like any other now. paras is
+                # already filtered to > min_paragraph_length, so no length
+                # re-check is needed.
+                anchor = title
+                for positive in paras[: m.max_triplets_per_article]:
                     batch_anchors.append(anchor)
                     batch_positives.append(positive)
                     batch_metadata.append((title, linked_titles))
