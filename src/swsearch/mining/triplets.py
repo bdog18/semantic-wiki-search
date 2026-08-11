@@ -18,6 +18,20 @@ from swsearch.metadata.store import get_texts_and_meta_from_db, load_faiss_meta_
 
 logger = get_logger(__name__)
 
+# Anchors are synthesized questions rather than the bare title -- a title is
+# short but still names a topic instead of asking about it, one step short
+# of the shape of a real query ("Who invented science?"). Rotating through
+# several templates (chosen once per article, not per triplet) avoids
+# teaching the model to key off one fixed literal prefix instead of the
+# underlying question semantics.
+_QUESTION_TEMPLATES = (
+    "What is {title}?",
+    "Tell me about {title}.",
+    "Who or what is {title}?",
+    "Explain {title}.",
+    "What do you know about {title}?",
+)
+
 # Globals populated once per worker process by init_worker (workers are
 # spawned -- see get_context("spawn") below -- so these are set up once per
 # process and reused across every file that process handles, not
@@ -167,16 +181,16 @@ def process_file_worker(args: tuple[str, str, int]) -> tuple[str, int]:
                 if not linked_titles:
                     continue
 
-                # Anchor is the article title, not a paragraph of prose: a
-                # title is short, names a topic rather than describing it in
-                # a sentence, and is structurally much closer to a search
-                # query than any paragraph (lead included) is. Paired
-                # against every paragraph in the article -- the lead
-                # paragraph is no longer "spent" as the anchor, so it's a
-                # normal eligible positive like any other now. paras is
-                # already filtered to > min_paragraph_length, so no length
-                # re-check is needed.
-                anchor = title
+                # Anchor is a synthesized question about the article title
+                # (see _QUESTION_TEMPLATES), not the bare title or a
+                # paragraph of prose -- the closest structural match to the
+                # eval task's actual queries mining can produce without an
+                # LLM call per article. Paired against every paragraph in
+                # the article -- the lead paragraph is no longer "spent" as
+                # the anchor, so it's a normal eligible positive like any
+                # other now. paras is already filtered to
+                # > min_paragraph_length, so no length re-check is needed.
+                anchor = random.choice(_QUESTION_TEMPLATES).format(title=title)
                 for positive in paras[: m.max_triplets_per_article]:
                     batch_anchors.append(anchor)
                     batch_positives.append(positive)
