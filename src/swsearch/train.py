@@ -20,7 +20,7 @@ from swsearch.logutil import get_logger
 logger = get_logger(__name__)
 
 
-def load_triplet_dataset(triplets_dir: str, holdout_files: int = 1, shuffle_buffer_size: int = 10_000):
+def load_triplet_dataset(triplets_dir: str, holdout_files: int = 3, shuffle_buffer_size: int = 10_000):
     """Stream mined (anchor, positive, negative) triplets from JSONL files
     without loading the whole corpus into memory -- mining a full enwiki
     corpus can produce tens of millions of triplets, the same scale that
@@ -67,6 +67,36 @@ def load_triplet_dataset(triplets_dir: str, holdout_files: int = 1, shuffle_buff
     return train_dataset, eval_dataset
 
 
+def _freeze_lower_layers(model: SentenceTransformer, freeze_layers: int) -> None:
+    """Freeze the embeddings layer and the bottom freeze_layers transformer
+    layers, leaving the top layers (and pooling) trainable. Lower layers of
+    a pretrained transformer tend to encode general-purpose linguistic
+    structure; upper layers are more task-specific. Everything observed
+    fine-tuning this model points to catastrophic forgetting as the core
+    tension -- a gentler run (fewer steps, lower learning rate) outperformed
+    a more thorough one on otherwise-identical data -- so partial freezing
+    protects the general-purpose structure the baseline's retrieval quality
+    depends on while still letting the top of the network adapt.
+
+    Assumes a BERT-style architecture (embeddings + encoder.layer, true for
+    the default all-MiniLM-L6-v2); silently skipped with a warning for any
+    base_model_name that doesn't expose that structure, rather than crashing
+    the run over an optional adjustment.
+    """
+    if freeze_layers <= 0:
+        return
+    try:
+        auto_model = model[0].auto_model
+        for param in auto_model.embeddings.parameters():
+            param.requires_grad = False
+        for layer in auto_model.encoder.layer[:freeze_layers]:
+            for param in layer.parameters():
+                param.requires_grad = False
+        logger.info("Froze embeddings + bottom %d transformer layer(s)", freeze_layers)
+    except AttributeError:
+        logger.warning("%s doesn't expose the expected embeddings/encoder.layer structure; skipping layer freezing", model[0].auto_model.__class__.__name__)
+
+
 def train_transfer_model(
     triplets_dir: str,
     output_dir: str,
@@ -76,6 +106,8 @@ def train_transfer_model(
     max_steps: int = 20000,
     learning_rate: float = 2e-5,
     scale: float = 20.0,
+    warmup_ratio: float = 0.1,
+    freeze_layers: int = 3,
     device: str | None = None,
 ) -> None:
     """Fine-tune base_model_name on triplets mined from the baseline index
@@ -111,11 +143,26 @@ def train_transfer_model(
     picks whichever surviving checkpoint scores highest on a held-out slice
     of the mined triplets (via TripletEvaluator's cosine accuracy), not
     necessarily the final one -- protects against the model quietly getting
-    worse over the course of a long run with nothing watching for it.
+    worse over the course of a long run with nothing watching for it. Note
+    this is still a proxy for the real target (Top-K/MRR against a labeled
+    query set), not the real thing: computing that during training would
+    mean re-embedding the entire corpus and rebuilding its index at every
+    eval step, which takes hours per checkpoint at this corpus's scale --
+    the exact cost that made a flat FAISS index infeasible earlier in this
+    project. Triplet-pair accuracy is the cheap stand-in; a real end-to-end
+    eval only happens once, after training, via `swsearch evaluate`.
+
+    warmup_ratio ramps the learning rate up over the first fraction of
+    steps instead of starting at full strength immediately -- standard
+    practice when fine-tuning a pretrained transformer, so the first
+    updates (potentially the most disruptive to already-good pretrained
+    weights) are the gentlest ones. freeze_layers protects the bottom of
+    the network from those updates entirely; see _freeze_lower_layers.
     """
     os.makedirs(output_dir, exist_ok=True)
     resolved_device = device or settings.model.device
     model = SentenceTransformer(base_model_name, device=resolved_device)
+    _freeze_lower_layers(model, freeze_layers)
     train_dataset, eval_dataset = load_triplet_dataset(triplets_dir)
     loss = losses.MultipleNegativesRankingLoss(model=model, scale=scale)
 
@@ -134,6 +181,7 @@ def train_transfer_model(
         per_device_train_batch_size=batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         learning_rate=learning_rate,
+        warmup_ratio=warmup_ratio,
         fp16=(resolved_device == "cuda"),
         logging_steps=100,
         eval_strategy="steps" if evaluator is not None else "no",

@@ -162,6 +162,8 @@ def train_transfer(
     max_steps: int = typer.Option(20000, help="Total training steps (triplets stream, so there's no fixed epoch count)."),
     learning_rate: float = typer.Option(2e-5, help="Learning rate."),
     scale: float = typer.Option(20.0, help="MultipleNegativesRankingLoss softmax temperature (higher = sharper)."),
+    warmup_ratio: float = typer.Option(0.1, help="Fraction of steps to ramp the learning rate up over before it hits full strength."),
+    freeze_layers: int = typer.Option(3, help="Freeze the embeddings + this many bottom transformer layers (out of 6 for the default base model); 0 disables freezing."),
 ) -> None:
     """Fine-tune a pretrained SentenceTransformer on mined triplets
     (transfer learning) with MultipleNegativesRankingLoss, keeping whichever
@@ -180,6 +182,8 @@ def train_transfer(
         max_steps=max_steps,
         learning_rate=learning_rate,
         scale=scale,
+        warmup_ratio=warmup_ratio,
+        freeze_layers=freeze_layers,
     )
     typer.echo(f"Fine-tuned model saved to {output_dir}")
 

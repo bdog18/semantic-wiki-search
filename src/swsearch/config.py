@@ -41,6 +41,8 @@ class MiningSettings(BaseModel):
     min_text_length: int = 100
     min_paragraph_length: int = 30
     min_paragraphs_for_triplets: int = 2
+    min_positive_words: int = 15
+    sentence_anchor_probability: float = 0.3
 
 
 class PathSettings(BaseModel):

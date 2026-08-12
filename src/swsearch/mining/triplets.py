@@ -2,6 +2,7 @@ import gc
 import json
 import os
 import random
+import re
 import time
 from multiprocessing import cpu_count, get_context
 
@@ -17,6 +18,18 @@ from swsearch.logutil import get_logger
 from swsearch.metadata.store import get_texts_and_meta_from_db, load_faiss_meta_sqlite
 
 logger = get_logger(__name__)
+
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s")
+
+
+def _first_sentence(text: str, max_len: int = 200) -> str:
+    """A lightweight (non-NLP) approximation of "the first sentence" --
+    real sentence tokenization isn't worth the dependency/cost at this
+    corpus's scale, and this only needs to be roughly right, not exact."""
+    match = _SENTENCE_END_RE.search(text[:max_len])
+    if match:
+        return text[: match.start() + 1].strip()
+    return text[:max_len].strip()
 
 # Globals populated once per worker process by init_worker (workers are
 # spawned -- see get_context("spawn") below -- so these are set up once per
@@ -159,7 +172,16 @@ def process_file_worker(args: tuple[str, str, int]) -> tuple[str, int]:
                 if len(raw_text) < m.min_text_length:
                     continue
 
-                paras = [p for p in split_paragraphs(raw_text) if len(p) > m.min_paragraph_length]
+                # min_positive_words on top of the character-length filter:
+                # a 30-char string can be "See also: History of science."
+                # -- not a substantive paragraph, just short prose that
+                # happens to clear the character floor. Word count is a
+                # cheap, dependency-free proxy for "this is actually a
+                # sentence/paragraph," not boilerplate.
+                paras = [
+                    p for p in split_paragraphs(raw_text)
+                    if len(p) > m.min_paragraph_length and len(p.split()) >= m.min_positive_words
+                ]
                 if len(paras) < m.min_paragraphs_for_triplets:
                     continue
 
@@ -167,16 +189,22 @@ def process_file_worker(args: tuple[str, str, int]) -> tuple[str, int]:
                 if not linked_titles:
                     continue
 
-                # Anchor is the article title, not a paragraph of prose: a
-                # title is short, names a topic rather than describing it in
-                # a sentence, and is structurally much closer to a search
-                # query than any paragraph (lead included) is. Paired
-                # against every paragraph in the article -- the lead
-                # paragraph is no longer "spent" as the anchor, so it's a
-                # normal eligible positive like any other now. paras is
-                # already filtered to > min_paragraph_length, so no length
-                # re-check is needed.
-                anchor = title
+                # Anchor is usually the article title -- short, names a
+                # topic rather than describing it in a sentence, and
+                # structurally much closer to a search query than any
+                # paragraph is (confirmed empirically: title anchors beat
+                # both lead-paragraph and full-question-template anchors on
+                # real eval). A minority of articles instead anchor on the
+                # first sentence of the lead paragraph: real, naturally-
+                # occurring prose (not a synthetic template, which diluted
+                # signal and measurably hurt), giving the training data a
+                # little sentence-shaped variety without repeating the
+                # template mistake. Chosen once per article, not per
+                # triplet, same as the title-only anchor was.
+                if random.random() < m.sentence_anchor_probability:
+                    anchor = _first_sentence(paras[0])
+                else:
+                    anchor = title
                 for positive in paras[: m.max_triplets_per_article]:
                     batch_anchors.append(anchor)
                     batch_positives.append(positive)
