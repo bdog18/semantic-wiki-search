@@ -19,7 +19,7 @@ def embed_paragraphs(
     meta_db_path: str,
     model_name: str,
     batch_size: int = 4096,
-    encode_batch_size: int = 256,
+    encode_batch_size: int = 32,
     device: str = "cpu",
 ) -> int:
     """Split every article in data_dir into paragraphs, embed them in batches,
@@ -39,27 +39,19 @@ def embed_paragraphs(
     those get encoded together in one actual GPU forward pass inside that
     cycle. Before this parameter existed, model.encode() was called with no
     batch_size of its own, so it silently used sentence-transformers'
-    library default (32) regardless of how large batch_size was set to --
-    e.g. a batch_size=1024 run was still only ever doing 32-at-a-time GPU
-    calls, 32x smaller than intended. This runs in a single process (unlike
-    mining/triplets.py's multi-worker encode() calls), so there's no
-    multiply-by-worker-count memory concern here -- 256 is the same value
-    already proven safe under mining's harder case (several concurrent
-    worker processes each doing their own encode() calls).
+    library default (32) regardless of how large batch_size was set to.
 
-    batch_size defaults much larger than encode_batch_size for a reason
-    that isn't obvious: encode() sorts its *entire input list* by length
-    before slicing it into encode_batch_size-sized GPU batches (grouping
-    similar-length texts to minimize padding waste). That sort operates
-    over whatever list it's handed -- i.e. batch_size's worth, not the
-    whole corpus. A small batch_size means each GPU batch is a wide, poorly
-    length-matched slice of a small sorted pool (e.g. one 256-batch was 25%
-    of a 1024-item pool -- lots of length variance, lots of padding
-    waste); a large batch_size gives encode() a much bigger pool to sort
-    over, so the same 256-item GPU batch becomes a narrow, length-homogeneous
-    slice instead (256/4096 = ~6%). Confirmed live this was actually
-    regressing throughput at batch_size=1024: GPU utilization sat at 43%,
-    consistent with cycles going to padding rather than useful compute.
+    encode_batch_size defaults back to that same value (32), not because
+    larger is impossible to make work, but because it's the only value
+    confirmed live as fast on this corpus/hardware (~32k paragraphs/sec).
+    Raising it to 256 was tried, on the theory that encode()'s internal
+    length-sort (it sorts its *entire input list* by length before slicing
+    into encode_batch_size-sized GPU batches, to group similar-length texts
+    and minimize padding) would do better with a bigger batch_size pool to
+    sort over -- but that was never actually confirmed faster live; the one
+    real run on it stayed stuck around 2.7k paragraphs/sec, an order of
+    magnitude worse than 32, for reasons not fully root-caused. Reverted
+    back to the known-good value rather than keep chasing the theory.
 
     Returns the total number of paragraphs embedded.
     """
