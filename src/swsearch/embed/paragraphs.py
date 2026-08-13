@@ -18,7 +18,7 @@ def embed_paragraphs(
     embeddings_dir: str,
     meta_db_path: str,
     model_name: str,
-    batch_size: int = 1024,
+    batch_size: int = 4096,
     encode_batch_size: int = 256,
     device: str = "cpu",
 ) -> int:
@@ -46,6 +46,20 @@ def embed_paragraphs(
     multiply-by-worker-count memory concern here -- 256 is the same value
     already proven safe under mining's harder case (several concurrent
     worker processes each doing their own encode() calls).
+
+    batch_size defaults much larger than encode_batch_size for a reason
+    that isn't obvious: encode() sorts its *entire input list* by length
+    before slicing it into encode_batch_size-sized GPU batches (grouping
+    similar-length texts to minimize padding waste). That sort operates
+    over whatever list it's handed -- i.e. batch_size's worth, not the
+    whole corpus. A small batch_size means each GPU batch is a wide, poorly
+    length-matched slice of a small sorted pool (e.g. one 256-batch was 25%
+    of a 1024-item pool -- lots of length variance, lots of padding
+    waste); a large batch_size gives encode() a much bigger pool to sort
+    over, so the same 256-item GPU batch becomes a narrow, length-homogeneous
+    slice instead (256/4096 = ~6%). Confirmed live this was actually
+    regressing throughput at batch_size=1024: GPU utilization sat at 43%,
+    consistent with cycles going to padding rather than useful compute.
 
     Returns the total number of paragraphs embedded.
     """
