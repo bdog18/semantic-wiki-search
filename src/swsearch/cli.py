@@ -87,7 +87,8 @@ def embed(
     output_dir: Path = typer.Option(settings.paths.embeddings_dir, help="Where to write per-batch embedding .npy files."),
     meta_db: Path = typer.Option(settings.paths.faiss_meta_db_path, help="Where to write the FAISS metadata SQLite store."),
     model_name: str = typer.Option(settings.model.embedding_model_name, help="SentenceTransformer model name."),
-    batch_size: int = typer.Option(1024, help="Paragraphs per encode/save batch."),
+    batch_size: int = typer.Option(1024, help="Paragraphs accumulated before each encode/save/write cycle (not the GPU batch size -- see encode-batch-size)."),
+    encode_batch_size: int = typer.Option(256, help="Paragraphs encoded together in one GPU forward pass."),
 ) -> None:
     """Split articles into paragraphs and embed them, writing metadata + a
     manifest alongside the embeddings so index building can never drift out
@@ -100,6 +101,7 @@ def embed(
         meta_db_path=str(meta_db),
         model_name=model_name,
         batch_size=batch_size,
+        encode_batch_size=encode_batch_size,
         device=settings.model.device,
     )
     typer.echo(f"Embedded {total} paragraphs into {output_dir}")

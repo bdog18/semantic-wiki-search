@@ -19,6 +19,7 @@ def embed_paragraphs(
     meta_db_path: str,
     model_name: str,
     batch_size: int = 1024,
+    encode_batch_size: int = 256,
     device: str = "cpu",
 ) -> int:
     """Split every article in data_dir into paragraphs, embed them in batches,
@@ -31,6 +32,20 @@ def embed_paragraphs(
     manifest, not by re-deriving order from sorted(glob(...)) -- the two can
     no longer silently drift apart, and this also avoids holding the entire
     corpus's texts/embeddings in memory at once.
+
+    batch_size and encode_batch_size are two different things despite the
+    similar names: batch_size is how many paragraphs accumulate before one
+    encode/save/write cycle runs at all; encode_batch_size is how many of
+    those get encoded together in one actual GPU forward pass inside that
+    cycle. Before this parameter existed, model.encode() was called with no
+    batch_size of its own, so it silently used sentence-transformers'
+    library default (32) regardless of how large batch_size was set to --
+    e.g. a batch_size=1024 run was still only ever doing 32-at-a-time GPU
+    calls, 32x smaller than intended. This runs in a single process (unlike
+    mining/triplets.py's multi-worker encode() calls), so there's no
+    multiply-by-worker-count memory concern here -- 256 is the same value
+    already proven safe under mining's harder case (several concurrent
+    worker processes each doing their own encode() calls).
 
     Returns the total number of paragraphs embedded.
     """
@@ -57,7 +72,7 @@ def embed_paragraphs(
             if not batch_texts:
                 return
             embeddings = model.encode(
-                batch_texts, convert_to_numpy=True, normalize_embeddings=True
+                batch_texts, convert_to_numpy=True, normalize_embeddings=True, batch_size=encode_batch_size
             ).astype(np.float32)
 
             npy_filename = f"batch_{batch_number:05d}.npy"
