@@ -88,7 +88,7 @@ def embed(
     meta_db: Path = typer.Option(settings.paths.faiss_meta_db_path, help="Where to write the FAISS metadata SQLite store."),
     model_name: str = typer.Option(settings.model.embedding_model_name, help="SentenceTransformer model name."),
     batch_size: int = typer.Option(4096, help="Paragraphs accumulated (and length-sorted for padding-efficient GPU batching) before each encode/save/write cycle -- not the GPU batch size itself, see encode-batch-size."),
-    encode_batch_size: int = typer.Option(32, help="Paragraphs encoded together in one GPU forward pass. 32 measured fastest live (~32k paragraphs/sec) over larger values on this corpus/hardware -- raising it looks better in isolation but interacts badly with encode()'s internal length-sort, see embed_paragraphs's docstring."),
+    encode_batch_size: int = typer.Option(256, help="Paragraphs encoded together in one GPU forward pass. Paired with batch_size=4096, this measured as the fastest full-corpus embed run on record (~3.4k paragraphs/sec) -- see embed_paragraphs's docstring for the comparison data."),
 ) -> None:
     """Split articles into paragraphs and embed them, writing metadata + a
     manifest alongside the embeddings so index building can never drift out

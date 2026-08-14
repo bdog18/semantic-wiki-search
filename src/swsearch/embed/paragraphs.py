@@ -19,7 +19,7 @@ def embed_paragraphs(
     meta_db_path: str,
     model_name: str,
     batch_size: int = 4096,
-    encode_batch_size: int = 32,
+    encode_batch_size: int = 256,
     device: str = "cpu",
 ) -> int:
     """Split every article in data_dir into paragraphs, embed them in batches,
@@ -41,17 +41,20 @@ def embed_paragraphs(
     batch_size of its own, so it silently used sentence-transformers'
     library default (32) regardless of how large batch_size was set to.
 
-    encode_batch_size defaults back to that same value (32), not because
-    larger is impossible to make work, but because it's the only value
-    confirmed live as fast on this corpus/hardware (~32k paragraphs/sec).
-    Raising it to 256 was tried, on the theory that encode()'s internal
-    length-sort (it sorts its *entire input list* by length before slicing
-    into encode_batch_size-sized GPU batches, to group similar-length texts
-    and minimize padding) would do better with a bigger batch_size pool to
-    sort over -- but that was never actually confirmed faster live; the one
-    real run on it stayed stuck around 2.7k paragraphs/sec, an order of
-    magnitude worse than 32, for reasons not fully root-caused. Reverted
-    back to the known-good value rather than keep chasing the theory.
+    Three full-corpus (70,365,524 paragraph) runs settled which combination
+    is actually fastest, since instantaneous readings mid-run were
+    misleading here and led to a wrong call earlier in this project's
+    history (a transient ~2.7k paragraphs/sec reading was mistaken for a
+    measurement of the batch_size=4096/encode_batch_size=256 config, when
+    it was actually still-running batch_size=1024/encode_batch_size=256 --
+    the regressed combination one commit before this one -- caught mid-run
+    on the wrong process):
+      - batch_size=1024, encode_batch_size=256 (the regressed state): 2,755/s
+      - batch_size=4096, encode_batch_size=32  (original/library default): 3,384/s
+      - batch_size=4096, encode_batch_size=256 (current default): 3,392/s
+    The last two are within noise of each other, but 256 has the edge on
+    real full-run data and lets each accumulation cycle do fewer, larger
+    GPU calls -- keep it unless a future full-corpus run says otherwise.
 
     Returns the total number of paragraphs embedded.
     """
