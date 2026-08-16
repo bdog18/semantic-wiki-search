@@ -32,6 +32,13 @@ class ModelSettings(BaseModel):
     embedding_model_name: str = "all-MiniLM-L6-v2"
     device: str = Field(default_factory=_default_device)
     use_gpu_faiss: bool = False
+    
+    
+class RerankSettings(BaseModel):
+    enabled: bool = False
+    title_match_weight: float
+    backlink_weight: float
+    
 
 
 class MiningSettings(BaseModel):
