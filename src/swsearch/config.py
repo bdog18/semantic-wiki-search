@@ -99,6 +99,11 @@ class PathSettings(BaseModel):
     @property
     def link_graph_db_path(self) -> Path:
         return self.processed_dir / "wiki_link_graph.db"
+    
+    # --- backlink counts ---
+    @property
+    def backlink_counts_db_path(self) -> Path:
+        return self.processed_dir / "wiki_backlink_counts.db"
 
     # --- embeddings / FAISS ---
     @property

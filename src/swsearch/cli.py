@@ -82,6 +82,18 @@ def build_linkgraph(
 
 
 @app.command()
+def build_backlinks(
+    db_in: Path = typer.Option(settings.paths.link_graph_db_path, help="Existing link graph sqlite db."),
+    db_out: Path = typer.Option(settings.paths.backlink_counts_db_path, help="Where to write the SQLite backlink count lookup."),
+) -> None:
+    """Build a SQLite database containing backlink counts for each page in the link graph."""
+    from swsearch.linkgraph.backlinks import build_backlink_counts_sqlite
+
+    build_backlink_counts_sqlite(str(db_in), str(db_out))
+    typer.echo(f"Backlink counts written to {settings.paths.backlink_counts_db_path}")
+
+
+@app.command()
 def embed(
     input_dir: Path = typer.Option(settings.paths.json_dir, help="Directory of cleaned article JSON to embed."),
     output_dir: Path = typer.Option(settings.paths.embeddings_dir, help="Where to write per-batch embedding .npy files."),
