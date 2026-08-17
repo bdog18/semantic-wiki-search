@@ -70,6 +70,13 @@ css = """
     color: var(--body-text-color-subdued);
     margin-bottom: 12px;
 }
+.search-box {
+    border: 1px solid var(--border-color-primary);
+    border-radius: var(--radius-lg);
+    padding: 8px 12px;
+    --block-padding: 6px 10px;
+    --layout-gap: 8px;
+}
 .results-box {
     border: 1px solid var(--border-color-primary);
     border-radius: var(--radius-lg);
@@ -85,25 +92,27 @@ with gr.Blocks(title="Wikipedia Semantic Search") as iface:
         elem_id="subheader",
     )
 
-    with gr.Row():
+    with gr.Group(elem_classes=["search-box"]):
         query_input = gr.Textbox(
             placeholder="Enter your semantic query...",
             label="Search Query",
-            scale=4,
         )
+        with gr.Row():
+            k_slider = gr.Slider(
+                minimum=1,
+                maximum=10,
+                step=1,
+                value=5,
+                label="Top K Results",
+                scale=3,
+            )
+            rerank_checkbox = gr.Checkbox(
+                value=True, label="Enable reranking", scale=1
+            )
+    with gr.Row():
         search_button = gr.Button("Search", variant="primary", scale=1)
 
     gr.Examples(examples=EXAMPLE_QUERIES, inputs=[query_input])
-
-    with gr.Row():
-        k_slider = gr.Slider(
-            minimum=1,
-            maximum=10,
-            step=1,
-            value=5,
-            label="Top K Results",
-        )
-        rerank_checkbox = gr.Checkbox(value=True, label="Enable reranking")
 
     with gr.Group(elem_classes=["results-box"]):
         gr.Markdown("### Results")
