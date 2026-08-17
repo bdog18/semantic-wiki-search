@@ -52,6 +52,6 @@ def load_backlink_counts_sqlite(db_path: str) -> sqlite3.Connection:
     """Load and return connection to backlinks count database."""
     if not os.path.exists(db_path):
         raise FileNotFoundError(f"backlinks count database not found at {db_path}")
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
