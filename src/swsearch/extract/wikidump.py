@@ -10,14 +10,25 @@ from swsearch.logutil import get_logger
 
 logger = get_logger(__name__)
 
+# Below this, a "paragraph" is almost always a bare MediaWiki section header
+# ("History.", "Career.", "Personal life.") rather than real content -- a
+# 200-file corpus sample found 31% of paragraphs under 40 chars, dominated by
+# a few hundred repeated header strings, while the 70-100 char range was
+# already ~90%+ genuine sentences. Filtered here so these never get embedded,
+# indexed, or mined as triplets in the first place.
+MIN_PARAGRAPH_CHARS = 70
+
 
 def clean_text(text: str) -> str:
-    """Decode HTML entities, normalize whitespace, and re-join paragraphs on blank lines."""
+    """Decode HTML entities, drop citation/markup noise, and normalize
+    whitespace down to one line per paragraph."""
     text = html.unescape(text)
+    text = re.sub(r'<ref\b[^>]*>.*?</ref>', ' ', text, flags=re.IGNORECASE | re.DOTALL)  # cited/reference content, not article prose
+    text = re.sub(r'<[^>]+>', ' ', text)  # any other leftover HTML/XML tags (<br>, <section>, stray dump metadata, ...)
     text = re.sub(r'\s*\n\s*\n\s*', '\n', text)  # normalize paragraph breaks
     text = re.sub(r'[ \t]+', ' ', text)  # normalize spaces
     text = '\n'.join(line.strip() for line in text.splitlines())
-    return text.strip().replace("\n", "\n\n")
+    return text.strip()
 
 
 def parse_docstring(file_path: str) -> list[dict]:
@@ -35,15 +46,29 @@ def parse_docstring(file_path: str) -> list[dict]:
 
         doc_info = []
         for doc in tree.findall('doc'):
-            content = doc.text.strip() if doc.text else ""
+            title = doc.get('title')
+            raw = doc.text.strip() if doc.text else ""
+            lines = [line for line in clean_text(raw).split("\n") if line]
+
+            # WikiExtractor emits the article title as its own leading line
+            # before a blank line and the body. Left in, it survives
+            # paragraph-splitting downstream (embed_paragraphs, mine_triplets)
+            # as its own "paragraph" that's a near-perfect lexical match for
+            # title-like queries, so it wins the per-article dedup in search
+            # over real content. Strip it here, once, at the shared source.
+            if lines and title and lines[0] == title.strip():
+                lines = lines[1:]
+
+            lines = [line for line in lines if len(line) >= MIN_PARAGRAPH_CHARS]
+            content = "\n\n".join(lines)
             word_count = len(content.split())
 
             if word_count >= 100:
                 doc_info.append({
                     'id': doc.get('id'),
                     'url': doc.get('url'),
-                    'title': doc.get('title'),
-                    'content': clean_text(content),
+                    'title': title,
+                    'content': content,
                 })
 
         return doc_info
