@@ -209,11 +209,12 @@ def search(
     index_path: Path = typer.Option(settings.paths.faiss_index_path, help="FAISS index to search."),
     meta_db: Path = typer.Option(settings.paths.faiss_meta_db_path, help="FAISS metadata SQLite store matching index_path."),
     model_name: str = typer.Option(settings.model.embedding_model_name, help="Model to encode the query with -- must match whatever model produced index_path's embeddings (override for non-baseline indexes, e.g. a fine-tuned model's local directory)."),
+    rerank: bool = typer.Option(settings.rerank.enabled, "--rerank/--no-rerank", help="Rerank by title-match + backlink count instead of plain cosine similarity."),
 ) -> None:
     """Search the index and print the top-k articles."""
     from swsearch.search.engine import SearchEngine
 
-    engine = SearchEngine(index_path=str(index_path), meta_db_path=str(meta_db), model_name=model_name)
+    engine = SearchEngine(index_path=str(index_path), meta_db_path=str(meta_db), model_name=model_name, rerank_enabled=rerank)
     for rank, result in enumerate(engine.search(query, k=k), start=1):
         typer.echo(f"{rank}. {result['title']}  (score={result['score']:.4f})  {result['url']}")
 
@@ -225,13 +226,14 @@ def evaluate(
     index_path: Path = typer.Option(settings.paths.faiss_index_path, help="FAISS index to evaluate (override to compare a different model's index)."),
     meta_db: Path = typer.Option(settings.paths.faiss_meta_db_path, help="FAISS metadata SQLite store matching index_path."),
     model_name: str = typer.Option(settings.model.embedding_model_name, help="Model to encode queries with -- must match whatever model produced index_path's embeddings (override for non-baseline indexes, e.g. a fine-tuned model's local directory)."),
+    rerank: bool = typer.Option(settings.rerank.enabled, "--rerank/--no-rerank", help="Rerank by title-match + backlink count instead of plain cosine similarity."),
 ) -> None:
     """Run Top-K Accuracy, Precision@K, Recall@K, and MRR against a real SearchEngine."""
     from swsearch.eval.metrics import evaluate_all_metrics, load_test_set
     from swsearch.search.engine import SearchEngine
 
     ks = tuple(int(k.strip()) for k in k_values.split(","))
-    engine = SearchEngine(index_path=str(index_path), meta_db_path=str(meta_db), model_name=model_name)
+    engine = SearchEngine(index_path=str(index_path), meta_db_path=str(meta_db), model_name=model_name, rerank_enabled=rerank)
     retrieval_function = lambda q: [r["title"] for r in engine.search(q, k=max(ks))]  # noqa: E731
 
     test_set = load_test_set(str(test_queries))

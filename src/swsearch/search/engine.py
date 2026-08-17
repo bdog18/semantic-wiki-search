@@ -7,6 +7,8 @@ from swsearch.config import settings
 from swsearch.index.faiss_store import load_index
 from swsearch.logutil import get_logger
 from swsearch.metadata.store import get_text_and_meta_from_db, load_faiss_meta_sqlite
+from swsearch.rerank.heuristic import rerank
+from swsearch.linkgraph.backlinks import load_backlink_counts_sqlite
 
 logger = get_logger(__name__)
 
@@ -29,19 +31,39 @@ class SearchEngine:
         meta_db_path: str | None = None,
         article_titles_path: str | None = None,
         model_name: str | None = None,
+        rerank_enabled: bool | None = None,
     ):
         paths = settings.paths
         self.index = load_index(index_path or str(paths.faiss_index_path))
         self.meta_conn = load_faiss_meta_sqlite(meta_db_path or str(paths.faiss_meta_db_path))
         self.model = SentenceTransformer(model_name or settings.model.embedding_model_name)
-
+        self.rerank_enabled = rerank_enabled if rerank_enabled is not None else settings.rerank.enabled
         titles_path = article_titles_path or str(paths.article_titles_path)
+        
         try:
             with open(titles_path, "r", encoding="utf-8") as f:
                 self.article_urls: dict[str, str] = json.load(f)
         except FileNotFoundError:
             logger.warning("Article titles file not found at %s; result URLs will be empty", titles_path)
             self.article_urls = {}
+        
+        self.backlink_conn = None
+        self.max_backlink_count = 1
+        if self.rerank_enabled:
+            try:
+                self.backlink_conn = load_backlink_counts_sqlite(str(settings.paths.backlink_counts_db_path))
+                # Corpus-wide constant -- computed once here, not per query/candidate,
+                # since the answer never changes for the lifetime of this SearchEngine.
+                cur = self.backlink_conn.cursor()
+                cur.execute(
+                    "SELECT count FROM backlinks ORDER BY count DESC "
+                    "LIMIT 1 OFFSET (SELECT CAST(COUNT(*) * 0.01 AS INT) FROM backlinks)"
+                )
+                row = cur.fetchone()
+                self.max_backlink_count = row["count"] if row is not None else 1
+            except FileNotFoundError:
+                logger.warning("Backlink counts database not found at %s; backlink reranking will be disabled", str(settings.paths.backlink_counts_db_path))
+                self.backlink_conn = None
 
     def search(self, query: str, k: int = 5, candidate_pool: int | None = None) -> list[dict]:
         """Return up to k results as [{"title", "url", "score", "snippet"}, ...],
@@ -81,5 +103,16 @@ class SearchEngine:
                     "snippet": text,
                 }
 
-        ranked = sorted(best_per_article.values(), key=lambda r: r["score"], reverse=True)
+        if self.backlink_conn is not None:
+            ranked = rerank(
+                query,
+                list(best_per_article.values()),
+                self.backlink_conn,
+                title_weight=settings.rerank.title_match_weight,
+                backlink_weight=settings.rerank.backlink_weight,
+                max_backlink_count=self.max_backlink_count,
+            )
+        else:
+            ranked = sorted(best_per_article.values(), key=lambda r: r["score"], reverse=True)
+            
         return ranked[:k]

@@ -36,9 +36,8 @@ class ModelSettings(BaseModel):
     
 class RerankSettings(BaseModel):
     enabled: bool = False
-    title_match_weight: float
-    backlink_weight: float
-    
+    title_match_weight: float = 0.5
+    backlink_weight: float = 0.3
 
 
 class MiningSettings(BaseModel):
@@ -167,6 +166,7 @@ class Settings(BaseSettings):
     model: ModelSettings = ModelSettings()
     mining: MiningSettings = MiningSettings()
     paths: PathSettings = PathSettings()
+    rerank: RerankSettings = RerankSettings()
 
 
 @lru_cache
