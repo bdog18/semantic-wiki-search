@@ -65,9 +65,19 @@ class SearchEngine:
                 logger.warning("Backlink counts database not found at %s; backlink reranking will be disabled", str(settings.paths.backlink_counts_db_path))
                 self.backlink_conn = None
 
-    def search(self, query: str, k: int = 5, candidate_pool: int | None = None) -> list[dict]:
+    def search(
+        self,
+        query: str,
+        k: int = 5,
+        candidate_pool: int | None = None,
+        rerank_enabled: bool | None = None,
+    ) -> list[dict]:
         """Return up to k results as [{"title", "url", "score", "snippet"}, ...],
         ranked by cosine similarity, deduplicated to one (best) hit per article.
+
+        rerank_enabled overrides this instance's default for a single call
+        (e.g. to let a caller compare reranked vs. raw results); it can only
+        disable reranking, not enable it if the backlink DB wasn't loaded.
         """
         pool = candidate_pool or max(k * 10, 50)
         query_embedding = self.model.encode([query], convert_to_numpy=True)
@@ -103,7 +113,8 @@ class SearchEngine:
                     "snippet": text,
                 }
 
-        if self.backlink_conn is not None:
+        use_rerank = self.backlink_conn is not None and rerank_enabled is not False
+        if use_rerank:
             ranked = rerank(
                 query,
                 list(best_per_article.values()),
