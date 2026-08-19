@@ -1,0 +1,32 @@
+# Serving-only dependency set, deliberately narrower than pyproject's
+# `dependencies`. The package declares what the *pipeline* needs -- pyspark,
+# lxml, datasets, accelerate, gradio -- none of which the search API imports;
+# installing them would roughly triple the image for code that never runs in
+# it. The Dockerfile installs this list and then adds the package --no-deps.
+#
+# Verified against the serving import graph (config, logutil, search.engine,
+# index.faiss_store, metadata.store, rerank.heuristic, linkgraph.backlinks,
+# api.app). tqdm is here because index.faiss_store imports it at module
+# level, not because serving shows progress bars.
+#
+# Versions are the ones in the working venv, NOT the ones in the repo's
+# requirements.txt -- that file has drifted badly (it pins gradio 5.29.0
+# against an installed 6.22.0, fastapi 0.115.12 against 0.141.1, and so on).
+# Pinning to what demonstrably answers queries today beats pinning to a
+# frozen list nobody has run in months.
+#
+# faiss-cpu, not the faiss-gpu build installed locally: serving is CPU-only
+# (config.ModelSettings.use_gpu_faiss defaults False) and the GPU package
+# would pull a CUDA runtime this container has no device for.
+faiss-cpu==1.15.0
+sentence-transformers==5.6.1
+numpy==2.5.1
+tqdm==4.70.0
+fastapi==0.141.1
+uvicorn==0.52.1
+pydantic==2.13.4
+pydantic-settings==2.14.2
+python-dotenv==1.2.2
+# Unpinned: not installed in the local venv, so there is no verified version
+# to pin to, and boto3 ships backward-compatible releases continuously.
+boto3

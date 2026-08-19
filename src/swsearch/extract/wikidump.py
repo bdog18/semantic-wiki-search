@@ -6,6 +6,7 @@ import re
 from lxml import etree
 from tqdm import tqdm
 
+from swsearch.extract.wikitext import clean_paragraph
 from swsearch.logutil import get_logger
 
 logger = get_logger(__name__)
@@ -59,7 +60,14 @@ def parse_docstring(file_path: str) -> list[dict]:
             if lines and title and lines[0] == title.strip():
                 lines = lines[1:]
 
-            lines = [line for line in lines if len(line) >= MIN_PARAGRAPH_CHARS]
+            # Drops the residual MediaWiki markup WikiExtractor leaves behind
+            # -- file captions, unexpanded templates, table rows -- and
+            # unwraps inline links in the prose that survives, folding in the
+            # length filter. Applied here so a rebuild from raw never indexes
+            # markup in the first place; extract.wikitext documents how much
+            # of it there is and why so little of it does so much damage.
+            cleaned = (clean_paragraph(line, min_chars=MIN_PARAGRAPH_CHARS) for line in lines)
+            lines = [line for line in cleaned if line is not None]
             content = "\n\n".join(lines)
             word_count = len(content.split())
 

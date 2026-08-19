@@ -78,13 +78,36 @@ def test_rerank_preserves_original_score_field(tmp_path):
     assert ranked[0]["score"] == 0.42
 
 
-def test_rerank_returns_same_dict_shape(tmp_path):
+def test_rerank_adds_rerank_score_and_preserves_other_fields(tmp_path):
+    # rerank_score is now returned rather than popped -- search.engine
+    # promotes it to the user-facing "score" so the order results come back
+    # in is the order their score implies. With both weights at zero it
+    # reduces to the input score exactly.
     conn = _backlink_conn(tmp_path, {})
     candidates = [_candidate("A", score=0.1, url="http://x", snippet="hello")]
 
     ranked = rerank("query", candidates, conn, title_weight=0.0, backlink_weight=0.0, max_backlink_count=_MAX_BACKLINKS)
 
-    assert ranked == [{"title": "A", "url": "http://x", "score": 0.1, "snippet": "hello"}]
+    assert ranked == [
+        {"title": "A", "url": "http://x", "score": 0.1, "snippet": "hello", "rerank_score": 0.1}
+    ]
+
+
+def test_rerank_score_ranks_above_raw_score(tmp_path):
+    # The ordering guarantee search.engine depends on: whatever rerank
+    # reorders, rerank_score is descending across the returned list even
+    # when the raw scores are not.
+    conn = _backlink_conn(tmp_path, {"Popular Article": 100})
+    candidates = [
+        _candidate("Obscure Article", score=0.9),
+        _candidate("Popular Article", score=0.5),
+    ]
+
+    ranked = rerank("query", candidates, conn, title_weight=0.0, backlink_weight=1.0, max_backlink_count=_MAX_BACKLINKS)
+
+    scores = [c["rerank_score"] for c in ranked]
+    assert scores == sorted(scores, reverse=True)
+    assert [c["score"] for c in ranked] != sorted([c["score"] for c in ranked], reverse=True)
 
 
 def test_rerank_empty_candidates(tmp_path):

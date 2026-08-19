@@ -1,0 +1,13 @@
+# Docker does not read .gitignore, and data/ alone is 399GB -- without this
+# every build tries to ship the whole corpus to the daemon and appears to hang.
+data*/
+spark-temp/
+wikiextractor*/
+.venv/
+venv/
+notebooks/
+research/
+.git/
+.pytest_cache/
+**/__pycache__/
+*.pyc

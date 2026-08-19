@@ -1,18 +1,27 @@
+import logging
 import os
+
 import gradio as gr
+import requests
 
+# Deliberately imports nothing from swsearch: this app is a client of the
+# search API, not part of the package. That keeps its container down to
+# gradio + requests instead of dragging in torch, faiss and
+# sentence-transformers for a process that only formats markdown.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
-# Baseline (off-the-shelf all-MiniLM-L6-v2) for now: on the clean corpus it
-# still edges out the fine-tuned lr5e-6_steps8000 run on the metrics that
-# decide what a user sees first -- reranked MRR 0.7947 vs 0.7444 and Top-1
-# 0.7032 vs 0.6065 -- even though the fine-tune is slightly ahead on Top-5/
-# Top-10 and MAP. These are also the CLI's default paths
-# (settings.paths.faiss_index_path / faiss_meta_db_path), so the app and
-# `swsearch search` now answer the same query the same way. Swap back to the
-# transfer run's paths + its model/ directory to compare.
-INDEX_PATH = "data/processed/models/baseline/runs/all-MiniLM-L6/paragraphs.index"
-META_DB_PATH = "data/processed/models/baseline/runs/all-MiniLM-L6/paragraphs.index.meta.db"
-MODEL_NAME = "all-MiniLM-L6-v2"
+# Which index answers a query is the API's business now, set by its
+# deployment rather than here. Default suits `uvicorn swsearch.api.app:app`
+# on the same machine; set SWSEARCH_API_URL in the Railway service to point
+# at the deployed backend.
+API_URL = os.environ.get("SWSEARCH_API_URL", "http://localhost:8000").rstrip("/")
+API_KEY = os.environ.get("SWSEARCH_API_KEY")
+API_TIMEOUT_SECONDS = 15
 
 SNIPPET_MIN_CHARS = 50
 SNIPPET_MAX_CHARS = 220
@@ -24,8 +33,6 @@ EXAMPLE_QUERIES = [
     "How do neural networks learn?",
 ]
 
-engine = None
-
 def _truncate_snippet(text: str,limit: int = SNIPPET_MAX_CHARS) -> str:
     collapsed = " ".join(text.split())
     if len(collapsed) <= limit:
@@ -34,14 +41,31 @@ def _truncate_snippet(text: str,limit: int = SNIPPET_MAX_CHARS) -> str:
 
 
 def search_wiki(query, k=5, rerank=True):
-    if engine is None:
-        return "⚠️ Backend data not available (no FAISS index / metadata found). You're in frontend-only mode."
     if not query or not query.strip():
         return ""
 
-    results = engine.search(query, k=int(k), rerank_enabled=rerank)
+    headers = {"x-api-key": API_KEY} if API_KEY else {}
+    try:
+        response = requests.post(
+            f"{API_URL}/search",
+            json={"query": query.strip(), "k": int(k), "rerank": bool(rerank)},
+            headers=headers,
+            timeout=API_TIMEOUT_SECONDS,
+        )
+        response.raise_for_status()
+        results = response.json()["results"]
+    except (requests.RequestException, ValueError, KeyError) as e:
+        # Covers the backend still loading its index (503 for the ~30s a
+        # ~1GB index takes to read) as well as genuine outages. Both look
+        # the same to a user and both come right on a retry, so they get one
+        # message rather than an exception class.
+        logger.warning("Search request to %s failed: %s", API_URL, e)
+        return "⚠️ Search backend unavailable. Give it a moment and try again."
+
     if not results:
         return "No results found."
+
+    # Already ordered by the API; the engine guarantees descending score.
 
     blocks = [
         f"**{i}. [{r['title']}]({r['url']})**\n\n> {_truncate_snippet(r['snippet'])}"

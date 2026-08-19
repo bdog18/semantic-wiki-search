@@ -20,6 +20,14 @@ def rerank(
     backlink count, computed once by the caller) used to normalize
     log(1 + backlink_count) into roughly the same 0-1 range as title_match,
     so backlink popularity nudges the score rather than dominating it.
+
+    "score" is left untouched (it stays the caller's raw similarity) and the
+    combined value this function ranked by is returned as "rerank_score".
+    It used to be popped off before returning, which left callers holding a
+    list whose order no number in it explained -- and re-sorting by "score",
+    the obvious thing to do with a scored list, silently undid the
+    reranking. Promoting it to the user-facing score is search.engine's job,
+    not this function's.
     """
     for candidate in candidates:
         backlink_cursor = backlink_conn.cursor()
@@ -38,9 +46,6 @@ def rerank(
         )
 
     candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
-    for candidate in candidates:
-        candidate.pop("rerank_score", None)
-
     return candidates
 
 

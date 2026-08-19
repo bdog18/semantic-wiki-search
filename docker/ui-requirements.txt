@@ -1,0 +1,6 @@
+# Front-end only. Versions match the working venv rather than the repo's
+# requirements.txt, which has drifted (it pins gradio 5.29.0 against an
+# installed 6.22.0 -- and launch(theme=..., css=...) is version-sensitive,
+# so that pin would break the app's entry point).
+gradio==6.22.0
+requests==2.34.2

@@ -127,3 +127,4 @@ data*/
 spark-temp/
 wikiextractor*/
 .vscode/
+scripts/
