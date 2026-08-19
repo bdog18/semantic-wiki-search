@@ -5,6 +5,11 @@ data*/
 # after the rule they carve out of; without this the COPY in api.Dockerfile
 # fails with "file not found in build context" even though the file exists.
 !data/processed/wiki_backlink_counts.db
+# ...and the FAISS index, which docker/lambda.Dockerfile bakes in. Lambda has
+# no persistent local disk to stage an S3 download onto (/tmp is 512MB by
+# default and is wiped between cold starts), so the index has to ship in the
+# image. The App Runner image does not use this and downloads from S3.
+!data/processed/models/baseline/runs/all-MiniLM-L6/paragraphs.index
 spark-temp/
 wikiextractor*/
 .venv/

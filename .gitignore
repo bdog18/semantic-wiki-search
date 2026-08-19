@@ -128,3 +128,4 @@ spark-temp/
 wikiextractor*/
 .vscode/
 scripts/
+aws/

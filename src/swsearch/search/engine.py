@@ -79,15 +79,22 @@ class SearchEngine:
         if self.rerank_enabled:
             try:
                 self.backlink_conn = load_backlink_counts_sqlite(backlinks_path)
-                # Corpus-wide constant -- computed once here, not per query/candidate,
-                # since the answer never changes for the lifetime of this SearchEngine.
-                cur = self.backlink_conn.cursor()
-                cur.execute(
-                    "SELECT count FROM backlinks ORDER BY count DESC "
-                    "LIMIT 1 OFFSET (SELECT CAST(COUNT(*) * 0.01 AS INT) FROM backlinks)"
-                )
-                row = cur.fetchone()
-                self.max_backlink_count = row["count"] if row is not None else 1
+                # A property of the corpus, so it is configuration rather than
+                # something to rediscover on every boot: the query below sorts
+                # the whole 1.3GB backlinks table and measured 23.2s, which was
+                # the bulk of this service's cold start. settings pins the
+                # answer; set max_backlink_count to 0 to recompute it (after
+                # rebuilding the backlink counts, say).
+                self.max_backlink_count = settings.rerank.max_backlink_count
+                if not self.max_backlink_count:
+                    logger.info("Computing max_backlink_count (slow: full table sort)")
+                    cur = self.backlink_conn.cursor()
+                    cur.execute(
+                        "SELECT count FROM backlinks ORDER BY count DESC "
+                        "LIMIT 1 OFFSET (SELECT CAST(COUNT(*) * 0.01 AS INT) FROM backlinks)"
+                    )
+                    row = cur.fetchone()
+                    self.max_backlink_count = row["count"] if row is not None else 1
             except FileNotFoundError:
                 logger.warning("Backlink counts database not found at %s; backlink reranking will be disabled", backlinks_path)
                 self.backlink_conn = None

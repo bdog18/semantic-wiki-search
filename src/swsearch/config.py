@@ -38,6 +38,19 @@ class RerankSettings(BaseModel):
     enabled: bool = False
     title_match_weight: float = 0.5
     backlink_weight: float = 0.3
+    # The ~99th-percentile backlink count, used to normalize
+    # log(1 + backlink_count) into roughly 0-1. It is a property of the
+    # corpus, not of a query, so SearchEngine used to derive it once at
+    # startup with
+    #   SELECT count FROM backlinks ORDER BY count DESC
+    #   LIMIT 1 OFFSET (SELECT CAST(COUNT(*) * 0.01 AS INT) FROM backlinks)
+    # -- a full sort of the 1.3GB backlinks table that measured 23.2s, and
+    # was on its own 80%+ of the API's cold start. Pinned here instead.
+    #
+    # Recompute after rebuilding the backlink counts: run the query above and
+    # update this default (or set SWSEARCH_RERANK__MAX_BACKLINK_COUNT). Set
+    # it to 0 to force the startup query back on.
+    max_backlink_count: int = 540
 
 
 class MiningSettings(BaseModel):

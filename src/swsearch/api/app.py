@@ -36,17 +36,23 @@ BACKLINK_DB_PATH = os.environ.get("SWSEARCH_API_BACKLINK_DB_PATH")
 _engine: SearchEngine | None = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Load the index once, at startup, instead of per request.
+def load_engine() -> SearchEngine:
+    """Build the SearchEngine, or return the one already built.
 
-    Reading a ~1GB IVF-PQ index and building its direct map takes tens of
-    seconds, so there is a real window where the process is up but cannot
-    answer anything -- which is what /health exists to report. Left as a
-    hard failure on purpose: a container that starts "successfully" without
-    a backend and serves 503s to every request is harder to diagnose than
-    one that refuses to start.
+    Split out of lifespan so Lambda can call it during the INIT phase. Mangum
+    runs ASGI lifespan events on the first *invocation*, which would put a
+    ~10s index load inside a user's request; importing this module and
+    calling load_engine() at module scope moves that work into container
+    initialisation instead, where it happens once per container rather than
+    once per cold request.
+
+    Idempotent, so the uvicorn path (lifespan) and the Lambda path (module
+    import) can both call it without loading the index twice.
     """
+    global _engine
+    if _engine is not None:
+        return _engine
+
     # Defaults resolve to the baseline (off-the-shelf all-MiniLM-L6-v2) run,
     # the same index `swsearch search` uses. On the clean corpus it still
     # edges out the fine-tuned lr5e-6_steps8000 run on the metrics that
@@ -54,7 +60,6 @@ async def lifespan(app: FastAPI):
     # Top-1 0.7032 vs 0.6065 -- even though the fine-tune is slightly ahead
     # on Top-5/Top-10 and MAP. Point the SWSEARCH_API_* vars at the transfer
     # run's index/meta/model to compare.
-    global _engine
     logger.info("Loading SearchEngine...")
     # stage() passes local paths through untouched and downloads s3:// URIs,
     # so the same three variables configure a laptop and a container.
@@ -66,6 +71,22 @@ async def lifespan(app: FastAPI):
         backlink_db_path=stage(BACKLINK_DB_PATH),
     )
     logger.info("SearchEngine ready: %d vectors", _engine.index.ntotal)
+    return _engine
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Load the index once, at startup, instead of per request.
+
+    Reading a ~1GB IVF-PQ index and building its direct map takes seconds,
+    so there is a real window where the process is up but cannot answer
+    anything -- which is what /health exists to report. Left as a hard
+    failure on purpose: a container that starts "successfully" without a
+    backend and serves 503s to every request is harder to diagnose than one
+    that refuses to start.
+    """
+    global _engine
+    load_engine()
     yield
     _engine = None
 
@@ -102,9 +123,37 @@ class SearchResponse(BaseModel):
 
 @app.get("/health")
 def health() -> dict:
+    """Readiness, including a probe of the metadata backend.
+
+    Checking only that the index loaded is not readiness: the index and the
+    paragraph metadata are separate systems, and DynamoMetaStore's
+    constructor builds a boto3 client without contacting AWS. A deployment
+    pointed at a table that doesn't exist yet -- or that it lacks permission
+    to read -- would otherwise report a healthy 200 and fail on the first
+    real search instead.
+
+    One point read per call, which is negligible against the cost of finding
+    out the hard way. An empty result is still healthy: it means the query
+    succeeded and that row simply isn't present.
+    """
     if _engine is None:
         raise HTTPException(status_code=503, detail="Engine not loaded")
-    return {"status": "ok", "vectors": _engine.index.ntotal}
+
+    try:
+        probe = _engine.meta_store.get_many([0])
+    except Exception as exc:  # noqa: BLE001 -- a health check reports, it doesn't discriminate
+        logger.warning("Metadata backend probe failed: %s", exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"Metadata backend unavailable: {type(exc).__name__}",
+        ) from exc
+
+    return {
+        "status": "ok",
+        "vectors": _engine.index.ntotal,
+        "metadata_backend": type(_engine.meta_store).__name__,
+        "metadata_probe_hit": bool(probe),
+    }
 
 
 @app.post("/search", response_model=SearchResponse)
