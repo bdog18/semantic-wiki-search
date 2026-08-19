@@ -32,6 +32,11 @@ MODEL_NAME = os.environ.get("SWSEARCH_API_MODEL_NAME")
 # silently degrades to unreranked results if it is missing -- a failure mode
 # that looks like "search got worse" rather than like an error.
 BACKLINK_DB_PATH = os.environ.get("SWSEARCH_API_BACKLINK_DB_PATH")
+# Trades heap for reclaimable page cache when loading the index. Off by
+# default; set where the sandbox has a hard memory ceiling it will kill the
+# process for crossing. An environment variable rather than a build-time
+# constant so it can be flipped without rebuilding a 6.8GB image.
+INDEX_MMAP = os.environ.get("SWSEARCH_API_INDEX_MMAP", "").lower() in ("1", "true", "yes")
 
 _engine: SearchEngine | None = None
 
@@ -69,6 +74,7 @@ def load_engine() -> SearchEngine:
         model_name=MODEL_NAME,
         rerank_enabled=True,
         backlink_db_path=stage(BACKLINK_DB_PATH),
+        index_mmap=INDEX_MMAP,
     )
     logger.info("SearchEngine ready: %d vectors", _engine.index.ntotal)
     return _engine

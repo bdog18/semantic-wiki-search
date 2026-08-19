@@ -39,9 +39,10 @@ class SearchEngine:
         model_name: str | None = None,
         rerank_enabled: bool | None = None,
         backlink_db_path: str | None = None,
+        index_mmap: bool = False,
     ):
         paths = settings.paths
-        self.index = load_index(index_path or str(paths.faiss_index_path))
+        self.index = load_index(index_path or str(paths.faiss_index_path), mmap=index_mmap)
 
         # meta_db_path doubles as a backend selector: "dynamodb://table"
         # picks the remote store, anything else is a local SQLite file.

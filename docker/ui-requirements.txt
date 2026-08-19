@@ -4,3 +4,7 @@
 # so that pin would break the app's entry point).
 gradio==6.22.0
 requests==2.34.2
+# SigV4 signing for the Lambda Function URL. Deliberately not boto3 (~80MB
+# for a credential provider and a signer we don't otherwise need) -- this is
+# ~10KB and does only the signing.
+requests-aws4auth==1.3.1

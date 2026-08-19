@@ -31,6 +31,18 @@ COPY data/processed/models/baseline/runs/all-MiniLM-L6/paragraphs.index /opt/sws
 ENV SWSEARCH_API_BACKLINK_DB_PATH=/opt/swsearch/wiki_backlink_counts.db
 ENV SWSEARCH_API_INDEX_PATH=/opt/swsearch/paragraphs.index
 
+# SentenceTransformer.save() writes model.safetensors 0600. That is invisible
+# locally and under the Runtime Interface Emulator, both of which run as
+# root, but real Lambda runs the handler as an unprivileged user -- and
+# safetensors reports an unreadable file as FileNotFoundError, so the symptom
+# is a "missing" file that is plainly present in the image.
+#
+# Deliberately placed after the two large COPYs and scoped to the encoder:
+# chmod rewrites every file it touches into a new layer, so a -R over all of
+# /opt/swsearch would duplicate 2.3GB. This adds ~90MB instead and leaves the
+# big layers cached and already in ECR.
+RUN chmod -R a+rX /opt/swsearch/encoder
+
 # Metadata is the one artifact that stays remote -- 21GB doesn't fit in an
 # image. Overridable so a local RIE run can point at the SQLite file instead.
 ENV SWSEARCH_API_META_DB_PATH=dynamodb://swsearch-meta

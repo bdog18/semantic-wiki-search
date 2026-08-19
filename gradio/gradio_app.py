@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 
@@ -21,7 +22,32 @@ logger = logging.getLogger(__name__)
 # at the deployed backend.
 API_URL = os.environ.get("SWSEARCH_API_URL", "http://localhost:8000").rstrip("/")
 API_KEY = os.environ.get("SWSEARCH_API_KEY")
-API_TIMEOUT_SECONDS = 15
+
+# Long enough to survive a Lambda cold start reading a ~1GB index through
+# lazily-loaded image layers, which has measured 112-173s. The EventBridge
+# warmup schedule should make that rare; when it isn't rare, showing the
+# error beats a browser spinning for three minutes, so this is a compromise
+# rather than a ceiling that fits the worst case.
+API_TIMEOUT_SECONDS = int(os.environ.get("SWSEARCH_API_TIMEOUT", "45"))
+
+# Requests are SigV4-signed rather than the endpoint being public: AWS blocks
+# unauthenticated Lambda Function URLs on this account, and signing is the
+# better answer anyway -- the endpoint stops being reachable by anyone
+# without credentials, which makes the shared API key a second layer instead
+# of the only one. Unset credentials means unsigned requests, so a local
+# uvicorn backend still works with no AWS involvement.
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+_ACCESS_KEY = os.environ.get("AWS_ACCESS_KEY_ID")
+_SECRET_KEY = os.environ.get("AWS_SECRET_ACCESS_KEY")
+
+_auth = None
+if _ACCESS_KEY and _SECRET_KEY:
+    from requests_aws4auth import AWS4Auth
+
+    _auth = AWS4Auth(_ACCESS_KEY, _SECRET_KEY, AWS_REGION, "lambda")
+    logger.info("Signing requests to %s with SigV4 (region %s)", API_URL, AWS_REGION)
+else:
+    logger.info("No AWS credentials set; calling %s unsigned", API_URL)
 
 SNIPPET_MIN_CHARS = 50
 SNIPPET_MAX_CHARS = 220
@@ -44,12 +70,20 @@ def search_wiki(query, k=5, rerank=True):
     if not query or not query.strip():
         return ""
 
-    headers = {"x-api-key": API_KEY} if API_KEY else {}
+    headers = {"content-type": "application/json"}
+    if API_KEY:
+        headers["x-api-key"] = API_KEY
+
+    # Serialised here rather than passed as json=: SigV4 hashes the exact
+    # request body, so the bytes that get signed have to be the bytes that
+    # get sent.
+    payload = json.dumps({"query": query.strip(), "k": int(k), "rerank": bool(rerank)})
     try:
         response = requests.post(
             f"{API_URL}/search",
-            json={"query": query.strip(), "k": int(k), "rerank": bool(rerank)},
+            data=payload,
             headers=headers,
+            auth=_auth,
             timeout=API_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
