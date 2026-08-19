@@ -1,6 +1,10 @@
 # Docker does not read .gitignore, and data/ alone is 399GB -- without this
 # every build tries to ship the whole corpus to the daemon and appears to hang.
 data*/
+# ...except the backlink counts the API image bakes in. Exceptions must come
+# after the rule they carve out of; without this the COPY in api.Dockerfile
+# fails with "file not found in build context" even though the file exists.
+!data/processed/wiki_backlink_counts.db
 spark-temp/
 wikiextractor*/
 .venv/

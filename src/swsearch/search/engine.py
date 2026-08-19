@@ -38,6 +38,7 @@ class SearchEngine:
         article_titles_path: str | None = None,
         model_name: str | None = None,
         rerank_enabled: bool | None = None,
+        backlink_db_path: str | None = None,
     ):
         paths = settings.paths
         self.index = load_index(index_path or str(paths.faiss_index_path))
@@ -70,9 +71,14 @@ class SearchEngine:
         
         self.backlink_conn = None
         self.max_backlink_count = 1
+        # Explicit override for the same reason index_path and meta_db_path
+        # take one: PathSettings derives this from data_root, so a container
+        # that bakes the database in at a fixed location has no other way to
+        # say where it put it.
+        backlinks_path = backlink_db_path or str(settings.paths.backlink_counts_db_path)
         if self.rerank_enabled:
             try:
-                self.backlink_conn = load_backlink_counts_sqlite(str(settings.paths.backlink_counts_db_path))
+                self.backlink_conn = load_backlink_counts_sqlite(backlinks_path)
                 # Corpus-wide constant -- computed once here, not per query/candidate,
                 # since the answer never changes for the lifetime of this SearchEngine.
                 cur = self.backlink_conn.cursor()
@@ -83,7 +89,7 @@ class SearchEngine:
                 row = cur.fetchone()
                 self.max_backlink_count = row["count"] if row is not None else 1
             except FileNotFoundError:
-                logger.warning("Backlink counts database not found at %s; backlink reranking will be disabled", str(settings.paths.backlink_counts_db_path))
+                logger.warning("Backlink counts database not found at %s; backlink reranking will be disabled", backlinks_path)
                 self.backlink_conn = None
 
     def _url_for(self, title: str, curid: int | None) -> str:

@@ -20,6 +20,14 @@ RUN pip install --no-cache-dir -r api-requirements.txt
 ENV SENTENCE_TRANSFORMERS_HOME=/app/models
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-MiniLM-L6-v2')"
 
+# Backlink counts for reranking, ~1.3GB. Baked in rather than staged from S3
+# at boot: rerank is what produces the 0.7947 MRR the app advertises, the
+# lookup runs once per candidate per query (up to 50 per search), and a
+# missing file degrades silently to unreranked results rather than erroring.
+# Copied before src/ so editing code doesn't re-copy a gigabyte.
+COPY data/processed/wiki_backlink_counts.db /app/data/wiki_backlink_counts.db
+ENV SWSEARCH_API_BACKLINK_DB_PATH=/app/data/wiki_backlink_counts.db
+
 COPY pyproject.toml .
 COPY src/ ./src/
 # --no-deps: api-requirements.txt above is the authority on what gets

@@ -27,6 +27,11 @@ API_KEY = os.environ.get("SWSEARCH_API_KEY")
 INDEX_PATH = os.environ.get("SWSEARCH_API_INDEX_PATH")
 META_DB_PATH = os.environ.get("SWSEARCH_API_META_DB_PATH")
 MODEL_NAME = os.environ.get("SWSEARCH_API_MODEL_NAME")
+# Baked into the image rather than fetched at boot: it is 1.3GB, reranking is
+# not optional for result quality (reranked MRR 0.7947), and the engine
+# silently degrades to unreranked results if it is missing -- a failure mode
+# that looks like "search got worse" rather than like an error.
+BACKLINK_DB_PATH = os.environ.get("SWSEARCH_API_BACKLINK_DB_PATH")
 
 _engine: SearchEngine | None = None
 
@@ -58,6 +63,7 @@ async def lifespan(app: FastAPI):
         meta_db_path=stage(META_DB_PATH),
         model_name=MODEL_NAME,
         rerank_enabled=True,
+        backlink_db_path=stage(BACKLINK_DB_PATH),
     )
     logger.info("SearchEngine ready: %d vectors", _engine.index.ntotal)
     yield
