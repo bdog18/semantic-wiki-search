@@ -31,6 +31,18 @@ def load_index(index_path: str) -> faiss.Index:
     index = faiss.read_index(index_path)
     if isinstance(index, faiss.IndexIVF):
         index.make_direct_map()
+        # Avoid IVF's default parallel_mode=0 ("parallelise over queries"),
+        # which on this build (faiss-cpu 1.15.0, generic -- it logs that it
+        # could load neither the AVX2 nor the AVX512 library) returns
+        # corrupted results for multi-query searches against a corpus-scale
+        # index: searching 4 vectors at once returned one id repeated at
+        # distance -0.019 where the true nearest neighbours are at 0.417,
+        # while the same queries issued one at a time were correct.
+        # Single-query callers (search.engine.SearchEngine) never hit it,
+        # but nothing should have to know that to be safe. parallel_mode=3
+        # parallelises over inverted lists and was verified to reproduce
+        # single-threaded output exactly.
+        index.parallel_mode = 3
     return index
 
 

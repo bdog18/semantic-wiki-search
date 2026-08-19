@@ -42,13 +42,45 @@ class RerankSettings(BaseModel):
 
 class MiningSettings(BaseModel):
     max_triplets_per_article: int = 10
+    # Negatives are sampled from a *band* of the anchor's nearest neighbours
+    # (ranks [negative_rank_min, negative_rank_max)), not from the top of the
+    # list. Drawing from the top-10 -- the previous behaviour -- means the
+    # "negatives" are literally the most relevant paragraphs in the corpus,
+    # and the link graph is far too weak a filter to catch that.
+    #
+    # Measured over 250 anchors against the clean baseline index, with mean
+    # cos(anchor, positive) = 0.4744 as the bar a negative must sit below:
+    #   ranks      0-10   cos 0.5562   61.2% inverted   <- previous default
+    #   ranks    200-600  cos 0.4194   42.0% inverted
+    #   ranks   1000-2000 cos 0.3818   32.4% inverted   <- current default
+    #   ranks  5000-10000 cos 0.3368   30.0% inverted
+    # 1000-2000 is the knee: comfortably below the positive bar, but still
+    # far harder than a random paragraph (~0.05), so the loss keeps a real
+    # discrimination task. Going deeper buys little and costs hardness.
+    negative_rank_min: int = 1000
+    negative_rank_max: int = 2000
+    # How many candidates to draw out of that band per anchor. Kept at the
+    # old pool size so the per-batch SQLite lookup volume is unchanged --
+    # only the ranks the candidates come from moved.
     negative_pool_size: int = 10
+    # IVF cells probed when searching for negatives. The index ships with
+    # nprobe=10, which is fine for top-10 retrieval but too narrow to rank a
+    # 600-deep band reliably; 32 is what the rank-band measurements above
+    # were taken at.
+    negative_search_nprobe: int = 32
     batch_size: int = 128
     min_text_length: int = 100
     min_paragraph_length: int = 30
     min_paragraphs_for_triplets: int = 2
     min_positive_words: int = 15
-    sentence_anchor_probability: float = 0.3
+    # 0.0 => always anchor on the article title. This was the *effective*
+    # behaviour for every run that beat baseline: before extract/wikidump.py
+    # stopped emitting the article title as its own leading paragraph,
+    # paras[0] was that title, so `_first_sentence(paras[0])` returned the
+    # title too and this probability changed nothing. Cleaning the corpus
+    # silently activated real lead-sentence anchors -- which mining's own
+    # docstring records as empirically worse than title anchors.
+    sentence_anchor_probability: float = 0.0
 
 
 class PathSettings(BaseModel):
@@ -111,10 +143,36 @@ class PathSettings(BaseModel):
     def backlink_counts_db_path(self) -> Path:
         return self.processed_dir / "wiki_backlink_counts.db"
 
+    # --- models ---
+    @property
+    def models_dir(self) -> Path:
+        return self.processed_dir / "models"
+
     # --- embeddings / FAISS ---
     @property
     def faiss_index_dir(self) -> Path:
-        return self.processed_dir / "faiss_index"
+        """The active index, used by every CLI command that doesn't get an
+        explicit --index-path/--meta-db.
+
+        This deliberately points at the baseline run rather than the old
+        processed/faiss_index location. That location held an index built
+        from the pre-fix corpus -- back when extract/wikidump.py still
+        emitted the article title and bare section headers as their own
+        paragraphs -- and because `swsearch evaluate` and `swsearch search`
+        silently fall back here when the flags are omitted, that stale index
+        answered two separate evaluations with numbers from a corpus nobody
+        had used in weeks. Baseline measures MRR 0.7017 against it versus
+        0.7947 against the clean corpus, which reads as a regression that
+        never happened. Pointing the default at the live index removes the
+        trap.
+
+        NOTE that `swsearch embed` and `swsearch build-index` also default
+        their *outputs* here, and metadata.store.create_faiss_meta_db()
+        deletes whatever is already at its target path. Running either
+        without explicit --output-dir/--meta-db/--index-path will overwrite
+        the baseline index in place.
+        """
+        return self.models_dir / "baseline" / "runs" / "all-MiniLM-L6"
 
     @property
     def embeddings_dir(self) -> Path:

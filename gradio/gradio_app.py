@@ -1,14 +1,21 @@
 import gradio as gr
-from torch import minimum
 
 from swsearch.logutil import get_logger
 from swsearch.search.engine import SearchEngine
 
 logger = get_logger(__name__)
 
-INDEX_PATH = "data/processed/models/transfer_learning/runs/lr5e-6_steps8000/paragraphs.index"
-META_DB_PATH = "data/processed/models/transfer_learning/runs/lr5e-6_steps8000/paragraphs.index.meta.db"
-MODEL_NAME = "data/processed/models/transfer_learning/runs/lr5e-6_steps8000/model"
+# Baseline (off-the-shelf all-MiniLM-L6-v2) for now: on the clean corpus it
+# still edges out the fine-tuned lr5e-6_steps8000 run on the metrics that
+# decide what a user sees first -- reranked MRR 0.7947 vs 0.7444 and Top-1
+# 0.7032 vs 0.6065 -- even though the fine-tune is slightly ahead on Top-5/
+# Top-10 and MAP. These are also the CLI's default paths
+# (settings.paths.faiss_index_path / faiss_meta_db_path), so the app and
+# `swsearch search` now answer the same query the same way. Swap back to the
+# transfer run's paths + its model/ directory to compare.
+INDEX_PATH = "data/processed/models/baseline/runs/all-MiniLM-L6/paragraphs.index"
+META_DB_PATH = "data/processed/models/baseline/runs/all-MiniLM-L6/paragraphs.index.meta.db"
+MODEL_NAME = "all-MiniLM-L6-v2"
 
 SNIPPET_MIN_CHARS = 50
 SNIPPET_MAX_CHARS = 220

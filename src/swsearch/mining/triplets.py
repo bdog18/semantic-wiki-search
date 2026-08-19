@@ -63,6 +63,26 @@ def init_worker(faiss_index_path: str, faiss_meta_db_path: str, article_titles_p
     else:
         _index = cpu_index
 
+    if isinstance(_index, faiss.IndexIVF):
+        # Widen the IVF search: negatives come from a rank band a few hundred
+        # deep (see process_batch), and the index's stored nprobe is tuned
+        # for top-k retrieval, not for ranking that far down the list.
+        _index.nprobe = settings.mining.negative_search_nprobe
+
+        # CRITICAL correctness workaround, not a tuning knob. On this build
+        # (faiss-cpu 1.15.0, generic -- it logs that neither the AVX2 nor the
+        # AVX512 library could be loaded), IVFPQ's default parallel_mode=0
+        # "parallelise over queries" path returns garbage for multi-query
+        # searches against a corpus-scale index: querying 4 anchors at once
+        # returned the same id repeated with distance -0.019, where the
+        # correct nearest neighbours have distance 0.417. Single-query
+        # searches are unaffected, which is why search/engine.py (one query
+        # per call) never showed it -- but mining searches a whole batch at a
+        # time, so every mined negative would be drawn from corrupted
+        # results. parallel_mode=3 parallelises over inverted lists instead
+        # and was verified to match single-threaded output exactly.
+        _index.parallel_mode = 3
+
     _faiss_meta_conn = load_faiss_meta_sqlite(faiss_meta_db_path)
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -77,18 +97,38 @@ def init_worker(faiss_index_path: str, faiss_meta_db_path: str, article_titles_p
     logger.info("Worker %d: ready in %.1fs", worker_id, time.time() - start_time)
 
 
-def process_batch(anchors: list[str], positives: list[str], metadata: list[tuple[str, set[str]]], out_f, neg_pool_size: int) -> int:
-    """Encode a batch of anchor/positive pairs and mine one hard negative each
-    from the FAISS index, excluding paragraphs from the same or a linked
-    article. The negative is sampled randomly from the filtered candidate
-    pool rather than always taking the nearest neighbor -- always picking
-    the single hardest candidate has no relief once the model separates it
-    from the anchor, and the link graph is an incomplete proxy for "these
-    are actually unrelated" (two topically-close articles aren't always
-    mutually hyperlinked), so the nearest hit is disproportionately likely
-    to be a false negative. Sampling across the pool still yields hard
-    negatives without letting any single systematic false negative dominate
-    training. Returns the number of triplets written."""
+def process_batch(
+    anchors: list[str],
+    positives: list[str],
+    metadata: list[tuple[str, set[str]]],
+    out_f,
+    neg_pool_size: int,
+    rank_min: int,
+    rank_max: int,
+) -> int:
+    """Encode a batch of anchor/positive pairs and mine one negative each from
+    a *band* of the anchor's nearest neighbours (ranks [rank_min, rank_max)),
+    excluding paragraphs from the same or a linked article.
+
+    The band is the important part. Taking negatives from the top of the
+    neighbour list looks like textbook hard-negative mining, but the top
+    neighbours of an anchor are by construction the most relevant paragraphs
+    in the corpus, and the link graph is far too weak a filter to tell "hard
+    but genuinely unrelated" from "actually the right answer" (an article
+    links a few hundred titles; the corpus has tens of millions of
+    paragraphs). Measured over 3k mined triplets, 66% of top-10 negatives
+    were *more* anchor-similar than their own paired positive -- the training
+    signal was inverted for two thirds of the data, which is why fine-tuned
+    models degraded below baseline and degraded further the longer they
+    trained. Sampling from the configured band (MiningSettings carries the
+    per-band measurements behind the current default) puts mean negative
+    similarity back below mean positive similarity while staying far harder
+    than a random paragraph.
+
+    Within the band the negative is still sampled randomly rather than taken
+    at a fixed rank: the link graph's misses are systematic, so always
+    picking the same position would let one recurring kind of false negative
+    dominate. Returns the number of triplets written."""
     if not anchors or not _model or not _index or not _faiss_meta_conn:
         return 0
 
@@ -103,18 +143,30 @@ def process_batch(anchors: list[str], positives: list[str], metadata: list[tuple
             show_progress_bar=False,
         )
 
-        _, I = _index.search(anchor_embeddings.astype('float32'), neg_pool_size)
+        _, I = _index.search(anchor_embeddings.astype('float32'), rank_max)
+
+        # Subsample the band down to neg_pool_size candidates per anchor
+        # *before* touching SQLite. The band is rank_max - rank_min wide
+        # (hundreds of rows); looking all of it up would multiply the
+        # metadata read volume by that width for no benefit, since only one
+        # candidate per anchor is ever used.
+        sampled: list[list[int]] = []
+        for row in I:
+            band = [int(j) for j in row[rank_min:rank_max] if j >= 0]
+            if len(band) > neg_pool_size:
+                band = random.sample(band, neg_pool_size)
+            sampled.append(band)
 
         # One batched SQLite lookup for every candidate in the whole mining
         # batch instead of one round trip per candidate -- with neg_pool_size
         # candidates checked per anchor (no early break, since negatives are
         # sampled from the full pool), that was up to
         # len(anchors) * neg_pool_size individual queries per batch.
-        candidate_lookup = get_texts_and_meta_from_db(_faiss_meta_conn, [int(j) for row in I for j in row])
+        candidate_lookup = get_texts_and_meta_from_db(_faiss_meta_conn, [j for band in sampled for j in band])
 
         for idx, (anchor, positive, (src_title, linked_titles)) in enumerate(zip(anchors, positives, metadata)):
             candidates = []
-            for j in I[idx]:
+            for j in sampled[idx]:
                 neg_para, neg_title = candidate_lookup.get(int(j), (None, None))
                 if neg_para and neg_title and neg_title != src_title and neg_title not in linked_titles:
                     if len(neg_para) > min_len and neg_para != anchor and neg_para != positive:
@@ -189,18 +241,23 @@ def process_file_worker(args: tuple[str, str, int]) -> tuple[str, int]:
                 if not linked_titles:
                     continue
 
-                # Anchor is usually the article title -- short, names a
-                # topic rather than describing it in a sentence, and
-                # structurally much closer to a search query than any
-                # paragraph is (confirmed empirically: title anchors beat
-                # both lead-paragraph and full-question-template anchors on
-                # real eval). A minority of articles instead anchor on the
-                # first sentence of the lead paragraph: real, naturally-
-                # occurring prose (not a synthetic template, which diluted
-                # signal and measurably hurt), giving the training data a
-                # little sentence-shaped variety without repeating the
-                # template mistake. Chosen once per article, not per
-                # triplet, same as the title-only anchor was.
+                # Anchor is the article title -- short, names a topic rather
+                # than describing it in a sentence, and structurally much
+                # closer to a search query than any paragraph is (confirmed
+                # empirically: title anchors beat both lead-paragraph and
+                # full-question-template anchors on real eval).
+                #
+                # sentence_anchor_probability now defaults to 0.0, making
+                # this branch opt-in. It used to be 0.3, but that was a
+                # no-op in practice: extract/wikidump.py emitted the article
+                # title as its own leading paragraph, so paras[0] *was* the
+                # title and _first_sentence(paras[0]) returned it right
+                # back. Cleaning the corpus removed that stub and silently
+                # turned 30% of anchors into real lead-sentence prose -- the
+                # variant this project already measured as worse -- which is
+                # part of why post-cleaning fine-tunes regressed. Kept as a
+                # knob rather than deleted so the variant stays testable.
+                # Chosen once per article, not per triplet.
                 if random.random() < m.sentence_anchor_probability:
                     anchor = _first_sentence(paras[0])
                 else:
@@ -211,7 +268,10 @@ def process_file_worker(args: tuple[str, str, int]) -> tuple[str, int]:
                     batch_metadata.append((title, linked_titles))
 
                 if len(batch_anchors) >= m.batch_size:
-                    triplets_written += process_batch(batch_anchors, batch_positives, batch_metadata, out_f, m.negative_pool_size)
+                    triplets_written += process_batch(
+                        batch_anchors, batch_positives, batch_metadata, out_f,
+                        m.negative_pool_size, m.negative_rank_min, m.negative_rank_max,
+                    )
                     batch_anchors.clear()
                     batch_positives.clear()
                     batch_metadata.clear()
@@ -219,7 +279,10 @@ def process_file_worker(args: tuple[str, str, int]) -> tuple[str, int]:
                         gc.collect()
 
             if batch_anchors:
-                triplets_written += process_batch(batch_anchors, batch_positives, batch_metadata, out_f, m.negative_pool_size)
+                triplets_written += process_batch(
+                    batch_anchors, batch_positives, batch_metadata, out_f,
+                    m.negative_pool_size, m.negative_rank_min, m.negative_rank_max,
+                )
 
         if skipped_lines:
             logger.warning("%s: skipped %d malformed line(s)", file_path, skipped_lines)

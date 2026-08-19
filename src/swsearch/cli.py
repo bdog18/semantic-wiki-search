@@ -178,6 +178,8 @@ def train_transfer(
     scale: float = typer.Option(20.0, help="MultipleNegativesRankingLoss softmax temperature (higher = sharper)."),
     warmup_ratio: float = typer.Option(0.1, help="Fraction of steps to ramp the learning rate up over before it hits full strength."),
     freeze_layers: int = typer.Option(3, help="Freeze the embeddings + this many bottom transformer layers (out of 6 for the default base model); 0 disables freezing."),
+    eval_meta_db: Optional[Path] = typer.Option(None, help="FAISS metadata store used to build a real retrieval eval (test queries vs. sampled paragraphs) for checkpoint selection. Strongly recommended: without it, checkpoints are picked by held-out triplet accuracy, which has been measured climbing while real search quality collapsed."),
+    eval_distractors: int = typer.Option(500000, help="Random paragraphs added to the retrieval eval corpus alongside the test set's relevant articles, to keep ranking non-trivial."),
 ) -> None:
     """Fine-tune a pretrained SentenceTransformer on mined triplets
     (transfer learning) with MultipleNegativesRankingLoss, keeping whichever
@@ -198,6 +200,8 @@ def train_transfer(
         scale=scale,
         warmup_ratio=warmup_ratio,
         freeze_layers=freeze_layers,
+        eval_meta_db=str(eval_meta_db) if eval_meta_db else None,
+        eval_distractors=eval_distractors,
     )
     typer.echo(f"Fine-tuned model saved to {output_dir}")
 
