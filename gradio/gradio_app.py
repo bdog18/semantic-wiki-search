@@ -1,9 +1,6 @@
+import os
 import gradio as gr
 
-from swsearch.logutil import get_logger
-from swsearch.search.engine import SearchEngine
-
-logger = get_logger(__name__)
 
 # Baseline (off-the-shelf all-MiniLM-L6-v2) for now: on the clean corpus it
 # still edges out the fine-tuned lr5e-6_steps8000 run on the metrics that
@@ -21,23 +18,13 @@ SNIPPET_MIN_CHARS = 50
 SNIPPET_MAX_CHARS = 220
 
 EXAMPLE_QUERIES = [
-    "Who wrote Hamlet?",
+    "Who wrote The Odyssey?",
     "What causes the seasons to change?",
     "History of the United States",
     "How do neural networks learn?",
 ]
 
-try:
-    engine = SearchEngine(
-        index_path=INDEX_PATH,
-        meta_db_path=META_DB_PATH,
-        model_name=MODEL_NAME,
-        rerank_enabled=True,
-    )
-except (FileNotFoundError, RuntimeError) as e:
-    logger.warning("Could not load SearchEngine backend: %s", e)
-    engine = None
-
+engine = None
 
 def _truncate_snippet(text: str,limit: int = SNIPPET_MAX_CHARS) -> str:
     collapsed = " ".join(text.split())
@@ -130,4 +117,9 @@ with gr.Blocks(title="Wikipedia Semantic Search") as iface:
     query_input.submit(fn=search_wiki, inputs=search_inputs, outputs=output_box)
 
 if __name__ == "__main__":
-    iface.launch(theme=gr.themes.Soft(), css=css)
+    iface.launch(
+        server_name="0.0.0.0",
+        server_port=int(os.environ.get("PORT", 7860)),
+        theme=gr.themes.Soft(),
+        css=css,
+    )   
