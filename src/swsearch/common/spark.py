@@ -27,8 +27,9 @@ def get_spark_session(
 ) -> SparkSession:
     """Single canonical Spark session builder.
 
-    Replaces the three drifted ad-hoc SparkSession.builder configs that used
-    to live in link_graph.py, page_links.py, and spark_functions.py.
+    Replaces the three drifted ad-hoc SparkSession.builder configs that
+    predate the package layout; every Spark stage (extract, build-linkgraph,
+    embed) now goes through this one builder.
     """
     s = settings.spark
 

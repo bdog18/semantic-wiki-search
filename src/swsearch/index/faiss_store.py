@@ -43,7 +43,7 @@ def load_index(index_path: str, mmap: bool = False) -> faiss.Index:
     if isinstance(index, faiss.IndexIVF):
         index.make_direct_map()
         # Avoid IVF's default parallel_mode=0 ("parallelise over queries"),
-        # which on this build (faiss-cpu 1.15.0, generic -- it logs that it
+        # which on this build (faiss 1.15.0, generic -- it logs that it
         # could load neither the AVX2 nor the AVX512 library) returns
         # corrupted results for multi-query searches against a corpus-scale
         # index: searching 4 vectors at once returned one id repeated at
@@ -55,12 +55,6 @@ def load_index(index_path: str, mmap: bool = False) -> faiss.Index:
         # single-threaded output exactly.
         index.parallel_mode = 3
     return index
-
-
-def query_faiss(index_path: str, query_embedding: np.ndarray, k: int) -> np.ndarray:
-    index = load_index(index_path)
-    _, indices = index.search(query_embedding, k)
-    return indices
 
 
 def _iter_manifest_batches(embeddings_dir: str, manifest: list[tuple[str, int]]):
@@ -94,6 +88,20 @@ def build_flat_index_from_manifest(embeddings_dir: str, meta_conn, index_path: s
     if not manifest:
         raise ValueError(f"No manifest entries found for {embeddings_dir}; was `swsearch embed` run against this meta db?")
 
+    # Checked before reading a single .npy: this build holds the whole index in
+    # memory, so at corpus scale it dies partway through with an OOM that looks
+    # like a machine problem rather than a wrong flag. The row count is already
+    # in the manifest, so the check is free.
+    total_rows = sum(row_count for _, row_count in manifest)
+    dim = _manifest_dim(embeddings_dir, manifest)
+    estimated = estimate_flat_index_bytes(total_rows, dim)
+    if estimated > FLAT_INDEX_BYTE_CEILING:
+        raise ValueError(
+            f"A flat index over {total_rows:,} vectors x {dim} dims would be "
+            f"{estimated / 1024**3:.1f}GB, built in memory. Use --index-type ivfpq "
+            f"(or 'auto') for a corpus this size."
+        )
+
     os.makedirs(os.path.dirname(index_path) or ".", exist_ok=True)
 
     index = None
@@ -108,6 +116,76 @@ def build_flat_index_from_manifest(embeddings_dir: str, meta_conn, index_path: s
     faiss.write_index(index, index_path)
     logger.info("FAISS index saved to %s (%d vectors, verified aligned with meta DB)", index_path, index.ntotal)
     return index
+
+
+# A flat index stores every vector uncompressed and is assembled in memory
+# before it is written, so its size is exactly ntotal * dim * 4 bytes. Above
+# this ceiling, use IVF-PQ instead: the real corpus here (41,953,396 vectors x
+# 384 dims) would be 64GB flat, which is what OOM'd earlier in this project,
+# against 999MB as IVF-PQ. 4GB is chosen to sit far above any scratch corpus
+# (a few million paragraphs) and far below the point where flat stops being
+# practical.
+FLAT_INDEX_BYTE_CEILING = 4 * 1024**3
+
+
+def estimate_flat_index_bytes(total_rows: int, dim: int) -> int:
+    return total_rows * dim * 4
+
+
+def resolve_index_type(index_type: str, total_rows: int, dim: int) -> str:
+    """Turn an index_type of "auto" into a concrete "flat" or "ivfpq".
+
+    "auto" exists because the right answer depends entirely on corpus size and
+    the wrong answer is expensive in opposite directions: flat over the full
+    corpus is a 64GB in-memory build, while IVF-PQ over a few thousand
+    paragraphs is lossy for no benefit and cannot even train enough centroids.
+    Explicit "flat"/"ivfpq" still override it.
+    """
+    if index_type in ("flat", "ivfpq"):
+        return index_type
+    if index_type != "auto":
+        raise ValueError(f"index_type must be 'auto', 'flat' or 'ivfpq', got {index_type!r}")
+
+    estimated = estimate_flat_index_bytes(total_rows, dim)
+    chosen = "flat" if estimated <= FLAT_INDEX_BYTE_CEILING else "ivfpq"
+    logger.info(
+        "index_type=auto -> %s (%d vectors x %d dims would be %.1fGB flat)",
+        chosen, total_rows, dim, estimated / 1024**3,
+    )
+    return chosen
+
+
+def _manifest_dim(embeddings_dir: str, manifest: list[tuple[str, int]]) -> int:
+    """Embedding dimension, from the first .npy the manifest names. Memory
+    mapped, so this reads a header rather than a batch of vectors."""
+    first = np.load(os.path.join(embeddings_dir, manifest[0][0]), mmap_mode='r')
+    return int(first.shape[1])
+
+
+def build_index_from_manifest(
+    embeddings_dir: str,
+    meta_conn,
+    index_path: str,
+    index_type: str = "auto",
+) -> faiss.Index:
+    """Build the index the manifest describes, choosing the type if asked to.
+
+    The single entry point callers (cli.build_index, pipeline) should use, so
+    the flat-vs-IVF-PQ decision lives here next to the size arithmetic that
+    drives it rather than being duplicated at every call site.
+    """
+    manifest = get_manifest(meta_conn)
+    if not manifest:
+        raise ValueError(f"No manifest entries found for {embeddings_dir}; was `swsearch embed` run against this meta db?")
+
+    resolved = resolve_index_type(
+        index_type,
+        sum(row_count for _, row_count in manifest),
+        _manifest_dim(embeddings_dir, manifest),
+    )
+    if resolved == "flat":
+        return build_flat_index_from_manifest(embeddings_dir, meta_conn, index_path)
+    return build_ivfpq_index_from_manifest(embeddings_dir, meta_conn, index_path)
 
 
 def _default_ivfpq_params(total_rows: int) -> tuple[int, int]:

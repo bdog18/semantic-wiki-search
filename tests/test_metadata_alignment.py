@@ -2,12 +2,14 @@ import faiss
 import numpy as np
 import pytest
 
+import swsearch.index.faiss_store as faiss_store
 from swsearch.index.faiss_store import (
     IndexAlignmentError,
     _default_ivfpq_params,
     build_flat_index_from_manifest,
     build_ivfpq_index_from_manifest,
     load_index,
+    resolve_index_type,
 )
 from swsearch.metadata.store import (
     append_faiss_meta_batch,
@@ -109,3 +111,61 @@ def test_reconstruct_works_after_loading_an_ivfpq_index(tmp_path):
     assert isinstance(loaded, faiss.IndexIVFPQ)
     vec = loaded.reconstruct(0)  # raises RuntimeError pre-fix
     assert vec.shape == (16,)
+
+
+# --- index type resolution ---
+# "auto" exists because the wrong choice is expensive in opposite directions:
+# a flat index over the real corpus (41,953,396 x 384) is 60GB assembled in
+# memory -- which is what OOM'd earlier in this project -- while IVF-PQ over a
+# scratch corpus is lossy for nothing. The shipped index is IVF-PQ at 999MB.
+
+def test_auto_picks_flat_for_a_scratch_corpus():
+    assert resolve_index_type("auto", 5_518, 384) == "flat"
+
+
+def test_auto_picks_ivfpq_for_the_real_corpus():
+    assert resolve_index_type("auto", 41_953_396, 384) == "ivfpq"
+
+
+def test_explicit_index_type_overrides_auto():
+    assert resolve_index_type("flat", 41_953_396, 384) == "flat"
+    assert resolve_index_type("ivfpq", 10, 384) == "ivfpq"
+
+
+def test_unknown_index_type_is_rejected():
+    with pytest.raises(ValueError):
+        resolve_index_type("bogus", 10, 384)
+
+
+def test_flat_builder_refuses_a_corpus_it_cannot_hold_in_memory(tmp_path, monkeypatch):
+    """Fails on the manifest, before reading a single batch -- otherwise the
+    error arrives partway through as an OOM that looks like a machine fault
+    rather than a wrong flag."""
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+    meta_db_path = tmp_path / "meta.db"
+    meta_conn = create_faiss_meta_db(str(meta_db_path))
+    # Real embedding width: the ceiling is a byte budget, so the dimension
+    # matters as much as the row count.
+    _write_batch(embeddings_dir, meta_conn, 0, 0, ["a", "b"], ["A", "B"], dim=384)
+
+    # Claim a corpus-scale row count without writing corpus-scale data.
+    monkeypatch.setattr(faiss_store, "get_manifest", lambda conn: [("batch_00000.npy", 41_953_396)])
+
+    with pytest.raises(ValueError, match="Use --index-type ivfpq"):
+        faiss_store.build_flat_index_from_manifest(str(embeddings_dir), meta_conn, str(tmp_path / "flat.index"))
+
+
+def test_build_index_from_manifest_routes_small_corpora_to_flat(tmp_path):
+    embeddings_dir = tmp_path / "embeddings"
+    embeddings_dir.mkdir()
+    meta_db_path = tmp_path / "meta.db"
+    meta_conn = create_faiss_meta_db(str(meta_db_path))
+    _write_batch(embeddings_dir, meta_conn, 0, 0, ["a", "b", "c"], ["A", "A", "B"], dim=4)
+
+    index = faiss_store.build_index_from_manifest(
+        str(embeddings_dir), meta_conn, str(tmp_path / "auto.index"), index_type="auto"
+    )
+
+    assert isinstance(index, faiss.IndexFlat)
+    assert index.ntotal == 3

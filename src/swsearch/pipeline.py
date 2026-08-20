@@ -3,12 +3,20 @@
 Stages, in order:
   1. fetch raw data       (data/raw/*.sql, the XML dump, wikiextractor output --
                             skipped per-item if already present; see fetch.py)
-  2. build link graph     (SQL dumps -> wiki_link_graph.db)
-  3. extract               (wikiextractor output -> cleaned JSON/JSONL + article titles)
-  4. embed                 (paragraphs -> embeddings + metadata + manifest)
-  5. build index            (manifest -> FAISS index, alignment-checked)
-  6. mine triplets (opt-in) (only needed for the archived custom-encoder research;
+  2. build link graph      (SQL dumps -> wiki_link_graph.db)
+  3. build backlink counts (wiki_link_graph.db -> wiki_backlink_counts.db)
+  4. extract               (wikiextractor output -> cleaned JSON/JSONL + article titles)
+  5. embed                 (paragraphs -> embeddings + metadata + manifest)
+  6. build index           (manifest -> FAISS index, alignment-checked)
+  7. mine triplets (opt-in) (training data for `swsearch train-transfer`;
                               search/evaluate don't consume this)
+
+Stage 3 is here because search.engine reads wiki_backlink_counts.db and a
+missing one does not fail -- it logs a warning and silently serves unreranked
+results. Reranking is the single biggest quality lever in this system (MRR
+0.7947 vs 0.3767), so a pipeline that produced everything *except* the
+backlink counts handed back an engine that looked like it worked and scored
+half as well. `swsearch build-backlinks` still exists to rebuild it alone.
 
 Each stage's business logic lives in its own module (linkgraph, extract, embed,
 index, mining) -- this module just calls them in the right order with paths
@@ -31,7 +39,7 @@ from swsearch.logutil import get_logger
 
 logger = get_logger(__name__)
 
-_TOTAL_STAGES = 6
+_TOTAL_STAGES = 7
 
 
 def _format_elapsed(seconds: float) -> str:
@@ -69,8 +77,18 @@ def _stage(index: int, name: str, pipeline_start: float, skipped: bool = False):
 def run_full_pipeline(
     with_triplets: bool = False,
     skip_fetch: bool = False,
-    index_type: str = "flat",
+    index_type: str = "auto",
 ) -> None:
+    """index_type "auto" picks flat for small corpora and IVF-PQ for large
+    ones -- see index.faiss_store.resolve_index_type. The old default was a
+    hard "flat", which is right for a scratch corpus and catastrophic for the
+    real one: a flat index over 42M 384-dim vectors is 64GB, built in memory
+    before it is written, and it is what OOM'd earlier in this project. The
+    indexes actually shipped here are IVF-PQ at 999MB.
+    """
+    if index_type not in ("auto", "flat", "ivfpq"):
+        raise ValueError(f"index_type must be 'auto', 'flat' or 'ivfpq', got {index_type!r}")
+
     paths = settings.paths
     pipeline_start = time.monotonic()
 
@@ -91,14 +109,19 @@ def run_full_pipeline(
         )
         build_linkgraph_sqlite(str(paths.link_graph_jsonl_dir), str(paths.link_graph_db_path))
 
-    with _stage(3, "extract/clean articles", pipeline_start):
+    with _stage(3, "build backlink counts", pipeline_start):
+        from swsearch.linkgraph.backlinks import build_backlink_counts_sqlite
+
+        build_backlink_counts_sqlite(str(paths.link_graph_db_path), str(paths.backlink_counts_db_path))
+
+    with _stage(4, "extract/clean articles", pipeline_start):
         from swsearch.extract.wikidump import convert_json_array_to_jsonl, save_article_titles, traverse_directory
 
         traverse_directory(str(paths.extracted_dir), str(paths.json_dir))
         convert_json_array_to_jsonl(str(paths.json_dir), str(paths.jsonl_dir))
         save_article_titles(str(paths.jsonl_dir), str(paths.article_titles_path))
 
-    with _stage(4, "embed paragraphs", pipeline_start):
+    with _stage(5, "embed paragraphs", pipeline_start):
         from swsearch.embed.paragraphs import embed_paragraphs
 
         embed_paragraphs(
@@ -109,22 +132,19 @@ def run_full_pipeline(
             device=settings.model.device,
         )
 
-    with _stage(5, f"build FAISS index ({index_type})", pipeline_start):
-        from swsearch.index.faiss_store import build_flat_index_from_manifest, build_ivfpq_index_from_manifest
+    with _stage(6, f"build FAISS index ({index_type})", pipeline_start):
+        from swsearch.index.faiss_store import build_index_from_manifest
         from swsearch.metadata.store import load_faiss_meta_sqlite
 
         meta_conn = load_faiss_meta_sqlite(str(paths.faiss_meta_db_path))
         try:
-            if index_type == "flat":
-                build_flat_index_from_manifest(str(paths.embeddings_dir), meta_conn, str(paths.faiss_index_path))
-            elif index_type == "ivfpq":
-                build_ivfpq_index_from_manifest(str(paths.embeddings_dir), meta_conn, str(paths.faiss_index_path))
-            else:
-                raise ValueError(f"index_type must be 'flat' or 'ivfpq', got {index_type!r}")
+            build_index_from_manifest(
+                str(paths.embeddings_dir), meta_conn, str(paths.faiss_index_path), index_type=index_type
+            )
         finally:
             meta_conn.close()
 
-    with _stage(6, "mine triplets", pipeline_start, skipped=not with_triplets):
+    with _stage(7, "mine triplets", pipeline_start, skipped=not with_triplets):
         if with_triplets:
             from swsearch.mining.triplets import mine_triplets
 

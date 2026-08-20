@@ -59,6 +59,15 @@ def parse_linktarget(pattern, line):
 
 def export_link_graph_to_jsonl(page_sql_path, pagelinks_sql_path, linktarget_sql_path, jsonl_output_path):
     spark = get_spark_session("LinkGraphCreator")
+    try:
+        _export(spark, page_sql_path, pagelinks_sql_path, linktarget_sql_path, jsonl_output_path)
+    finally:
+        # Matches embed/paragraphs.py: a stage that raises mid-job should
+        # still release the session rather than leave a JVM behind.
+        spark.stop()
+
+
+def _export(spark, page_sql_path, pagelinks_sql_path, linktarget_sql_path, jsonl_output_path):
     sc = spark.sparkContext
 
     page_rdd = extract_sql_tuples(sc, page_sql_path, _PAGE_PATTERN, parse_page)
@@ -79,5 +88,3 @@ def export_link_graph_to_jsonl(page_sql_path, pagelinks_sql_path, linktarget_sql
 
     logger.info("Writing link graph JSONL to %s", jsonl_output_path)
     grouped.write.mode("overwrite").json(jsonl_output_path)
-
-    spark.stop()

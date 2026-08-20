@@ -240,7 +240,7 @@ Running the full pipeline from scratch (downloads ~70GB of dumps, produces
 ~200GB of artifacts, takes the better part of a day on a single GPU):
 
 ```bash
-swsearch pipeline                  # fetch → linkgraph → extract → embed → index
+swsearch pipeline                  # fetch → linkgraph → backlinks → extract → embed → index
 swsearch pipeline --skip-fetch     # assume data/raw is already populated
 ```
 
@@ -261,17 +261,18 @@ packages that ship the actual shared libraries.
 ## CLI
 
 ```
-swsearch pipeline         [--with-triplets] [--skip-fetch] [--index-type flat|ivfpq]
+swsearch pipeline         [--with-triplets] [--skip-fetch] [--index-type auto|flat|ivfpq]
 swsearch extract          [--input-dir] [--output-json-dir] [--output-jsonl-dir]
 swsearch build-linkgraph  [--page-sql] [--pagelinks-sql] [--linktarget-sql] [--db-out]
 swsearch build-backlinks  [--db-in] [--db-out]
 swsearch embed            [--input-dir] [--output-dir] [--meta-db] [--model-name] [--batch-size]
-swsearch build-index      [--embeddings-dir] [--index-path] [--meta-db] [--index-type]
+swsearch build-index      [--embeddings-dir] [--index-path] [--meta-db] [--index-type auto|flat|ivfpq]
 swsearch mine-triplets    [--jsonl-dir] [--index-path] [--meta-db] [--link-db] [--num-workers]
 swsearch train-transfer   [--output-dir] [--learning-rate] [--max-steps] [--eval-meta-db]
 swsearch search QUERY     [--k] [--index-path] [--meta-db] [--model-name] [--rerank]
 swsearch evaluate         [--test-queries] [--index-path] [--meta-db] [--model-name] [--rerank]
 swsearch tools inspect-index INDEX_PATH
+swsearch --version
 ```
 
 Every path defaults from `Settings` but is overridable per command, so the whole
@@ -316,26 +317,35 @@ any working directory.
 
 ```
 src/swsearch/
-├── config.py                # pydantic-settings singleton
+├── config.py                # pydantic-settings singleton (+ the measurements behind each default)
 ├── cli.py                   # typer app
 ├── pipeline.py              # chains every stage with timing banners
 ├── fetch.py                 # idempotent dump download + wikiextractor
+├── logutil.py               # one logging config, set up on first get_logger
 ├── train.py                 # fine-tuning + retrieval-based checkpoint selection
 ├── common/                  # shared Spark session, paragraph splitting
-├── extract/wikidump.py      # XML → cleaned JSON/JSONL (+ title/header filtering)
+├── extract/
+│   ├── wikidump.py          # XML → cleaned JSON/JSONL (+ title/header filtering)
+│   └── wikitext.py          # residual MediaWiki markup: drop furniture, unwrap prose
 ├── linkgraph/               # SQL dumps → link graph → backlink counts
 ├── embed/paragraphs.py      # paragraph embedding + manifest writer
-├── metadata/store.py        # FAISS metadata SQLite store
+├── metadata/
+│   ├── store.py             # FAISS metadata SQLite store
+│   └── backends.py          # SQLite / DynamoDB behind one batch-first interface
 ├── index/faiss_store.py     # index build/load, alignment assertions
 ├── mining/triplets.py       # parallel hard-negative mining (rank-band sampling)
 ├── search/engine.py         # embed → FAISS → cosine rerank → dedupe
 ├── rerank/heuristic.py      # title match + backlink authority
-└── eval/metrics.py          # MRR, MAP, R-Precision, Top-K
+├── eval/metrics.py          # MRR, MAP, R-Precision, Top-K over one retrieval pass
+├── tools/inspect_index.py   # `swsearch tools inspect-index` diagnostics
+├── migrate/                 # one-off metadata export (SQLite → DynamoDB-JSON)
+└── api/                     # FastAPI wrapper around SearchEngine
 
 research/custom_encoder.py   # archived: transformer trained from scratch (opt-in TF deps)
-gradio/gradio_app.py         # demo UI wired to SearchEngine
 scripts/                     # reproducible experiment runners (mining, training probes)
+notebooks/search_demo.ipynb  # the pipeline end to end, as library calls
 tests/                       # smoke suite + regression tests for past incidents
+docker/, gradio/             # serving/demo packaging — see "Serving" below
 ```
 
 ---
@@ -356,6 +366,67 @@ Checkpoint selection during training uses a separate `InformationRetrievalEvalua
 over a sampled corpus — deliberately *not* the same distribution as the training
 triplets, after the original metric proved able to climb while true quality
 collapsed.
+
+---
+
+## Disk footprint
+
+A full build is ~440GB. Only ~65GB of that is needed to *run and evaluate* the
+models — the rest is inputs and intermediates.
+
+`search/engine.py` reads exactly four things, so these are what a shelved copy
+must keep, per model plus the two shared files:
+
+| keep | size | why |
+|---|---|---|
+| `<run>/paragraphs.index` | 999MB | the index |
+| `<run>/paragraphs.index.meta.db` | 21GB | paragraph text + titles for the ids FAISS returns |
+| `<run>/model/` (minus `checkpoint-*`) | 88MB | fine-tuned runs only; baseline loads from the HF hub |
+| `processed/article_titles.json` | 300MB | result URLs (the SQLite backend carries no curid) |
+| `processed/wiki_backlink_counts.db` | 1.3GB | reranking — without it search silently drops to MRR 0.38 |
+| `test_data/test_queries.json` | 48KB | `swsearch evaluate` |
+
+Everything else is rebuildable, at a cost:
+
+| safe to delete | size | rebuild with | cost |
+|---|---|---|---|
+| `<run>/embeddings/` (×3) | 183GB | `swsearch embed` | ~3.5h GPU each |
+| `raw/` (dumps + wikiextractor output) | 88GB | `swsearch pipeline` (fetch stage) | ~70GB download |
+| `processed/triplets/` | 29GB | `swsearch mine-triplets` | 4–8h |
+| `processed/wiki_link_graph.db` | 24GB | `swsearch build-linkgraph` | needs the SQL dumps |
+| `processed/wiki_link_graph_jsonl/` | 21GB | intermediate of the same stage | |
+| `processed/wikidata_jsonl/` | 17GB | `swsearch extract` | only mining reads it |
+| `processed/wikidata_json/` | 17GB | `swsearch extract` | **the embed input** — keep it if you may re-embed |
+| `<run>/model/checkpoint-*` | 1.3GB | — | training scratch, not loadable as a model |
+
+Keeping `wikidata_json/` (17GB) is the highest-leverage exception: it is the
+cleaned corpus, and with it `embed` → `build-index` can be re-run for any model
+without touching the network. Without it, re-embedding starts from a 70GB
+download.
+
+> Mining renames each corpus file to `<name>.jsonl.completed` in place — a
+> rename, not a sidecar marker, so **the `.completed` files *are* the corpus**.
+> Deleting them deletes `wikidata_jsonl/`. To re-mine, rename them back; see
+> `scripts/retrain_fixed_mining.sh`, which does this carefully.
+
+---
+
+## Serving
+
+The engine is the project; the rest is packaging around it. `swsearch.api`
+is a small FastAPI wrapper that loads one `SearchEngine` at startup and
+exposes `/search` and `/health`:
+
+```bash
+uvicorn swsearch.api.app:app        # reads the same default index as the CLI
+```
+
+`docker/` builds it three ways (a container image, an AWS Lambda image, and a
+Gradio front end that calls the API over HTTP), and `gradio/gradio_app.py` is
+that front end. Those pieces are configured entirely through environment
+variables documented at their point of use — the Dockerfiles and
+`src/swsearch/api/app.py` — and are deliberately not covered here. Nothing in
+the pipeline, evaluation, or results above depends on any of it.
 
 ---
 

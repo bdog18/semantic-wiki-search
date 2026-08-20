@@ -14,10 +14,10 @@ def build_backlink_counts_sqlite(link_db_path: str, out_db_path: str) -> int:
     """Build the backlink counts SQLite lookup from link-graph SQLite."""
     conn = sqlite3.connect(link_db_path)
     cur = conn.cursor()
-    
+
     cur.execute("SELECT COUNT(*) FROM links")
     total_rows = cur.fetchone()[0]
-    
+
     cur.execute("SELECT from_title, linked_titles FROM links")
     skipped = 0
     ctr = Counter()
@@ -30,7 +30,7 @@ def build_backlink_counts_sqlite(link_db_path: str, out_db_path: str) -> int:
             skipped += 1
             logger.exception("Skipping malformed link-graph row")
     conn.close()
-    
+
     conn = sqlite3.connect(out_db_path)
     cur = conn.cursor()
     cur.execute("DROP TABLE IF EXISTS backlinks")
@@ -42,7 +42,7 @@ def build_backlink_counts_sqlite(link_db_path: str, out_db_path: str) -> int:
         )
     conn.commit()
     conn.close()
-    
+
     if skipped:
         logger.warning("Skipped %d malformed link-graph row(s) while building %s", skipped, out_db_path)
     return skipped

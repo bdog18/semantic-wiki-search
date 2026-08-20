@@ -175,3 +175,56 @@ def test_train_transfer_model_wires_evaluator_when_eval_split_exists(tmp_path, m
     assert trainer_kwargs["args"].eval_strategy.value == "steps"
     assert trainer_kwargs["args"].load_best_model_at_end is True
     assert trainer_kwargs["args"].metric_for_best_model == "eval_cosine_accuracy"
+
+
+# --- build_retrieval_evaluator: every return path ---
+# It reads through a SQLite connection that has to be closed on the way out,
+# and three of its four exits are early returns. Covering all four keeps the
+# connection handling honest: a refactor that closes the store correctly but
+# loses a variable along the way fails here rather than at hour two of a
+# training run.
+
+def _meta_db(tmp_path, titles=("Present Article", "Present Article")):
+    from swsearch.metadata.store import append_faiss_meta_batch, create_faiss_meta_db
+
+    path = tmp_path / "meta.db"
+    conn = create_faiss_meta_db(str(path))
+    append_faiss_meta_batch(conn, 0, [f"paragraph {i}" for i in range(len(titles))], list(titles))
+    conn.close()
+    return str(path)
+
+
+def _queries(tmp_path, relevant):
+    path = tmp_path / "test_queries.json"
+    path.write_text(json.dumps([{"query": "a question", "relevant_articles": relevant}]))
+    return str(path)
+
+
+def test_build_retrieval_evaluator_returns_evaluator_when_articles_are_present(tmp_path):
+    from swsearch.train import build_retrieval_evaluator
+
+    evaluator = build_retrieval_evaluator(
+        _queries(tmp_path, ["Present Article"]), _meta_db(tmp_path), distractor_count=0
+    )
+
+    assert evaluator is not None
+    # Selection must be on MRR@10 -- the same headline metric `swsearch
+    # evaluate` reports, so training-time and after-the-fact agree.
+    assert evaluator.primary_metric == "wiki-ir_cosine_mrr@10"
+
+
+def test_build_retrieval_evaluator_returns_none_when_no_query_is_answerable(tmp_path):
+    # Every relevant article missing from the store: the evaluator would score
+    # each checkpoint equally badly, so training falls back instead.
+    from swsearch.train import build_retrieval_evaluator
+
+    assert build_retrieval_evaluator(
+        _queries(tmp_path, ["Absent Article"]), _meta_db(tmp_path), distractor_count=0
+    ) is None
+
+
+def test_build_retrieval_evaluator_returns_none_when_inputs_are_missing(tmp_path):
+    from swsearch.train import build_retrieval_evaluator
+
+    assert build_retrieval_evaluator(str(tmp_path / "nope.json"), _meta_db(tmp_path)) is None
+    assert build_retrieval_evaluator(_queries(tmp_path, ["Present Article"]), str(tmp_path / "nope.db")) is None

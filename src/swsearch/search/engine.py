@@ -24,8 +24,8 @@ class SearchEngine:
     against the reconstructed candidate vectors, and collapse to one
     best-scoring result per article.
 
-    This is baseline.ipynb's proven embed -> flat-FAISS -> cosine-rerank
-    recipe, generalized from whole-article embeddings to the paragraph-level
+    The embed -> FAISS -> cosine-rerank recipe this project started from,
+    generalized from whole-article embeddings to the paragraph-level
     index/metadata the rest of the pipeline shares with triplet mining: many
     paragraphs can map to the same article, so results are deduplicated by
     article title before the top-k cut.
@@ -69,7 +69,7 @@ class SearchEngine:
                     self.article_urls = json.load(f)
             except FileNotFoundError:
                 logger.warning("Article titles file not found at %s; result URLs will be empty", titles_path)
-        
+
         self.backlink_conn = None
         self.max_backlink_count = 1
         # Explicit override for the same reason index_path and meta_db_path

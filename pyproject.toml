@@ -34,3 +34,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Import-mode importlib keeps tests/ off sys.path, so a test module can
+# never shadow a package module of the same name.
+addopts = "-q --import-mode=importlib"

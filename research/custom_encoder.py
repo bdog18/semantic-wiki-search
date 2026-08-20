@@ -1,9 +1,11 @@
 """Research spike: a custom transformer encoder trained from scratch with
-triplet loss, for the baseline / transfer-learning / custom-transformer
-3-model comparison -- see README.md. Not wired into the swsearch CLI; run
-directly (`python research/custom_encoder.py --help`) so TensorFlow/Keras
-stay an opt-in research dependency (requirements-research.txt) rather than a
-hard dependency of the installable package.
+triplet loss, as a third point of comparison against the off-the-shelf
+baseline and the fine-tuned model. Deprioritized -- the fine-tuning result
+in README.md made a from-scratch encoder on the same data an even steeper
+ask. Not wired into the swsearch CLI; run directly (`python
+research/custom_encoder.py --help`) so TensorFlow/Keras stay an opt-in
+research dependency (requirements-research.txt) rather than a hard
+dependency of the installable package.
 
 Reuses the same triplets file mined once against the baseline index (`swsearch
 mine-triplets`) -- no separate mining run is needed for this model either.

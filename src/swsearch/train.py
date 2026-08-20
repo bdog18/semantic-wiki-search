@@ -1,6 +1,7 @@
-"""Fine-tune a pretrained SentenceTransformer on mined triplets ("transfer
-learning" in the baseline / transfer-learning / custom-transformer 3-model
-comparison -- see README.md).
+"""Fine-tune a pretrained SentenceTransformer on mined triplets.
+
+This is the experiment README.md documents: it does not beat the
+off-the-shelf baseline, and the measurements explaining why live there.
 
 Reuses the single triplets file mined once against the baseline index
 (`swsearch mine-triplets`); no separate mining run is needed per target
@@ -128,8 +129,18 @@ def build_retrieval_evaluator(
         test_set = json.load(f)
 
     conn = load_faiss_meta_sqlite(meta_db_path)
-    cur = conn.cursor()
+    try:
+        cur = conn.cursor()
+        return _build_evaluator_from_meta(
+            cur, test_set, meta_db_path, distractor_count, max_paragraphs_per_article, seed, name
+        )
+    finally:
+        conn.close()
 
+
+def _build_evaluator_from_meta(cur, test_set, meta_db_path, distractor_count, max_paragraphs_per_article, seed, name):
+    """Body of build_retrieval_evaluator, split out only so the connection
+    it reads through is closed by a try/finally in the caller."""
     corpus: dict[str, str] = {}
     title_to_docs: dict[str, set[str]] = {}
     relevant_titles = {t for entry in test_set for t in entry.get("relevant_articles", [])}
@@ -249,11 +260,14 @@ def train_transfer_model(
     eval_distractors: int = 500_000,
 ) -> None:
     """Fine-tune base_model_name on triplets mined from the baseline index
-    with MultipleNegativesRankingLoss, saving the best checkpoint (by held-
-    out triplet accuracy, not necessarily the last step) to output_dir. That
-    path can then be passed straight to `swsearch embed --model-name
-    <output_dir>` -- sentence-transformers loads a local folder the same way
-    it loads a hub model name.
+    with MultipleNegativesRankingLoss, saving the best-scoring checkpoint
+    (not necessarily the last step) to output_dir. Selection is by real
+    retrieval MRR@10 when eval_meta_db is given, and by held-out triplet
+    accuracy only as a fallback -- see build_retrieval_evaluator for why
+    that fallback cannot be trusted on its own. That path can then be
+    passed straight to `swsearch embed --model-name <output_dir>` --
+    sentence-transformers loads a local folder the same way it loads a hub
+    model name.
 
     Uses MultipleNegativesRankingLoss (in-batch negatives, plus each row's
     mined hard negative as an extra candidate) instead of TripletLoss.

@@ -32,8 +32,8 @@ class ModelSettings(BaseModel):
     embedding_model_name: str = "all-MiniLM-L6-v2"
     device: str = Field(default_factory=_default_device)
     use_gpu_faiss: bool = False
-    
-    
+
+
 class RerankSettings(BaseModel):
     enabled: bool = False
     title_match_weight: float = 0.5
@@ -150,7 +150,7 @@ class PathSettings(BaseModel):
     @property
     def link_graph_db_path(self) -> Path:
         return self.processed_dir / "wiki_link_graph.db"
-    
+
     # --- backlink counts ---
     @property
     def backlink_counts_db_path(self) -> Path:

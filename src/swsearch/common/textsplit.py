@@ -1,7 +1,7 @@
 import re
 
 # One paragraph-split pattern shared by every producer/consumer of article
-# text: data_prep/wikidump.py writes paragraphs separated by a blank line,
+# text: extract/wikidump.py writes paragraphs separated by a blank line,
 # and this is the single place both plain-Python splitting (mining, eval)
 # and Spark's regexp-based split() column function read that convention from.
 PARAGRAPH_SPLIT_PATTERN = r"\n\s*\n"

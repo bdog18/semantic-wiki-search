@@ -70,7 +70,7 @@ def init_worker(faiss_index_path: str, faiss_meta_db_path: str, article_titles_p
         _index.nprobe = settings.mining.negative_search_nprobe
 
         # CRITICAL correctness workaround, not a tuning knob. On this build
-        # (faiss-cpu 1.15.0, generic -- it logs that neither the AVX2 nor the
+        # (faiss 1.15.0, generic -- it logs that neither the AVX2 nor the
         # AVX512 library could be loaded), IVFPQ's default parallel_mode=0
         # "parallelise over queries" path returns garbage for multi-query
         # searches against a corpus-scale index: querying 4 anchors at once

@@ -1,9 +1,34 @@
-import sqlite3
 import math
+import sqlite3
 
-from swsearch.logutil import get_logger
+# SQLite's default bound-parameter ceiling is 999; 500 matches the chunk size
+# metadata.store.get_texts_and_meta_from_db already uses for the same reason.
+_LOOKUP_CHUNK_SIZE = 500
 
-logger = get_logger(__name__)
+
+def _backlink_counts(conn: sqlite3.Connection, titles: list[str]) -> dict[str, int]:
+    """Fetch backlink counts for every candidate title in one query.
+
+    This used to be a cursor and a SELECT per candidate inside the scoring
+    loop -- up to 50 round trips against a 1.3GB table for a single search.
+    Same shape metadata.store and metadata.backends already fixed; see
+    metadata/backends.py's module docstring for why batch-first is the
+    interface both stores want. Titles with no row are simply absent, which
+    the caller reads as zero.
+    """
+    unique = list({t for t in titles if t})
+    if not unique:
+        return {}
+
+    counts: dict[str, int] = {}
+    cursor = conn.cursor()
+    for start in range(0, len(unique), _LOOKUP_CHUNK_SIZE):
+        chunk = unique[start : start + _LOOKUP_CHUNK_SIZE]
+        placeholders = ",".join("?" * len(chunk))
+        cursor.execute(f"SELECT title, count FROM backlinks WHERE title IN ({placeholders})", chunk)
+        for row in cursor.fetchall():
+            counts[row["title"]] = row["count"]
+    return counts
 
 
 def rerank(
@@ -28,41 +53,25 @@ def rerank(
     the obvious thing to do with a scored list, silently undid the
     reranking. Promoting it to the user-facing score is search.engine's job,
     not this function's.
+
+    The sort is stable, so candidates that tie on rerank_score come back in
+    the order they were passed in.
     """
+    counts = _backlink_counts(backlink_conn, [c["title"] for c in candidates])
+    query_set = set(query.lower().split())
+    backlink_denominator = math.log(1 + max_backlink_count)
+
     for candidate in candidates:
-        backlink_cursor = backlink_conn.cursor()
-        backlink_cursor.execute("SELECT title, count FROM backlinks WHERE title = ?", (candidate["title"],))
-        backlink_row = backlink_cursor.fetchone()
-        backlink_count = backlink_row["count"] if backlink_row is not None else 0
+        backlink_count = counts.get(candidate["title"], 0)
 
         title_set = set(candidate["title"].lower().split())
-        query_set = set(query.lower().split())
         title_match = len(title_set.intersection(query_set)) / len(query_set) if query_set else 0
 
         candidate["rerank_score"] = (
             candidate["score"]
             + title_weight * title_match
-            + backlink_weight * (math.log(1 + backlink_count) / math.log(1 + max_backlink_count))
+            + backlink_weight * (math.log(1 + backlink_count) / backlink_denominator)
         )
 
     candidates.sort(key=lambda x: x["rerank_score"], reverse=True)
     return candidates
-
-
-if __name__ == "__main__":
-    from swsearch.linkgraph.backlinks import load_backlink_counts_sqlite
-    from swsearch.config import settings
-
-    # Example usage
-    query = "example query"
-    candidates = [
-        {"title": "Example Title 1", "score": 0.8},
-        {"title": "Example Title 2", "score": 0.6},
-    ]
-    backlink_conn = load_backlink_counts_sqlite(str(settings.paths.backlink_counts_db_path))
-    title_weight = 0.5
-    backlink_weight = 0.3
-    max_backlink_count = 20000
-
-    reranked_results = rerank(query, candidates, backlink_conn, title_weight, backlink_weight, max_backlink_count)
-    print(reranked_results)
